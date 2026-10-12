@@ -11,6 +11,10 @@ from app.database import connect_to_mongo, close_mongo_connection, get_db
 from app.routes.auth import router as auth_router
 from app.routes.ai import router as ai_router
 from app.routes.calls import router as calls_router
+from app.routes.contacts import router as contacts_router
+from app.routes.telephony import router as telephony_router
+from app.routes.supervisor import router as supervisor_router
+from app.telephony.manager import get_telephony_provider
 from app.services.auth_service import decode_token
 from app.services.signaling_service import manager
 
@@ -56,6 +60,9 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(ai_router)
 app.include_router(calls_router)
+app.include_router(contacts_router)
+app.include_router(telephony_router)
+app.include_router(supervisor_router)
 
 @app.get("/api/health")
 async def health_check():
@@ -69,9 +76,12 @@ async def health_check():
         except Exception:
             db_status = "error"
 
+    provider = get_telephony_provider()
+    telephony_info = await provider.get_status()
+
     return {
         "status": "healthy",
-        "service": "OnGround AI API",
+        "service": "OnGround AI Intelligent Call Centre Platform",
         "database": {
             "name": settings.MONGODB_DATABASE,
             "status": db_status
@@ -80,6 +90,11 @@ async def health_check():
             "provider": "OpenRouter",
             "model": settings.OPENROUTER_MODEL,
             "configured": bool(settings.OPENROUTER_API_KEY)
+        },
+        "telephony": {
+            "provider": provider.provider_name,
+            "configured": provider.is_configured,
+            "details": telephony_info.get("active_carrier", "Unconfigured")
         },
         "realtime": {
             "signaling": "WebSocket",

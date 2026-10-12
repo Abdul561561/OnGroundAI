@@ -68,6 +68,20 @@ async def _create_indexes():
         # Unique email constraint on users
         await db.users.create_index("email", unique=True)
         await db.users.create_index("status")
+        await db.users.create_index("role")
+
+        # Contacts (Customer CRM) indexes
+        await db.contacts.create_index("phone_number")
+        await db.contacts.create_index("name")
+        await db.contacts.create_index("assigned_agent_id")
+        await db.contacts.create_index("status")
+        await db.contacts.create_index("tags")
+
+        # Follow-ups indexes
+        await db.follow_ups.create_index("contact_id")
+        await db.follow_ups.create_index("assigned_agent_id")
+        await db.follow_ups.create_index("status")
+        await db.follow_ups.create_index("due_at")
 
         # Conversations indexes
         await db.conversations.create_index([("user_id", 1), ("updated_at", -1)])
@@ -79,6 +93,9 @@ async def _create_indexes():
         # Calls indexes
         await db.calls.create_index([("caller_user_id", 1), ("created_at", -1)])
         await db.calls.create_index([("recipient_user_id", 1), ("created_at", -1)])
+        await db.calls.create_index("contact_id")
+        await db.calls.create_index("agent_id")
+        await db.calls.create_index("provider_call_id")
         await db.calls.create_index("status")
 
         # Transcripts indexes

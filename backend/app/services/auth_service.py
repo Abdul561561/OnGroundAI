@@ -1,6 +1,6 @@
 import datetime
 from datetime import timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Callable
 import bcrypt
 import jwt
 from fastapi import HTTPException, status, Depends
@@ -79,4 +79,23 @@ async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] =
             detail="User not found or account removed."
         )
 
+    # Ensure role is set
+    if "role" not in user:
+        user["role"] = "agent"
+
     return user
+
+def require_role(allowed_roles: List[str]) -> Callable:
+    """Role-Based Access Control dependency factory."""
+    async def role_checker(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+        user_role = current_user.get("role", "agent")
+        if user_role not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access forbidden: requires one of roles {allowed_roles}. Current role: {user_role}"
+            )
+        return current_user
+    return role_checker
+
+require_supervisor_or_admin = require_role(["supervisor", "admin"])
+require_admin = require_role(["admin"])

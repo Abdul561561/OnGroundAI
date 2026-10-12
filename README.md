@@ -1,53 +1,90 @@
-# OnGround AI — Voice & Text Intelligence Platform
+# OnGround AI — Intelligent Call Centre Platform
 
-> **Full-stack real-time communications, Text AI, and Voice AI intelligence platform built with React, Vite, TypeScript, Tailwind CSS, FastAPI, WebSockets, WebRTC, OpenRouter, and MongoDB Atlas.**
-
----
-
-## 1. Project Overview
-
-**OnGround AI** is a professional-grade call-centre intelligence and real-time communication platform. It unifies:
-1. **Multi-Turn Contextual Text AI**: Powered by OpenRouter free-tier LLM routing with conversation history persisted in MongoDB Atlas.
-2. **Interactive AI Voice Assistant**: Live microphone speech recognition, OpenRouter conversational processing, and natural browser speech synthesis with spoken interrupt capabilities.
-3. **Genuine WebRTC Human-to-Human Calling**: Real peer-to-peer browser audio calling over encrypted media streams, signaled via FastAPI WebSockets and Google STUN traversal.
-4. **Call History & AI Intelligence**: Session duration tracking, transcript persistence, and AI-generated executive summaries and action items.
+> **Full-Stack Call-Centre Staff Application featuring Customer CRM with Phone Lookup, Click-to-Call Softphone Dialer, Modular Telephony Carrier Architecture, Real-Time Agent Assist AI Copilot, Spoken Voice AI, and Supervisor Operations Oversight.**
 
 ---
 
-## 2. Architecture Diagram
+## 1. System Overview
+
+**OnGround AI** is a professional, enterprise-grade call-centre staff application built for front-line agents, supervisors, and operations teams. Designed from the ground up as a true call-centre workflow platform rather than a peer-to-peer demo, it integrates:
+
+1. **Role-Based Call Centre Workflows (RBAC)**:
+   - **Staff Agent**: Manage live availability, search assigned customers, launch Click-to-Call from CRM, utilize real-time Agent Assist AI coaching, and log post-call outcomes and follow-ups.
+   - **Supervisor**: Real-time workforce presence matrix, live queue monitoring (unassigned customers & pending follow-ups), 1-click workload reassignment, and aggregate call-centre analytics.
+   - **Administrator**: System diagnostics, carrier integration settings, and operational logs.
+2. **Customer CRM & Phone Directory**:
+   - Normalized E.164 telephone number search and customer name lookup.
+   - Customer interaction timeline: past calls, durations, transcripts, categorized outcomes, and AI executive summaries.
+   - Follow-up task scheduler with status tracking (`pending`, `completed`, `overdue`).
+3. **Browser Softphone Dialer**:
+   - Full E.164 international dialer with authentic audio DTMF tone feedback.
+   - Click-to-Call directly from any CRM customer profile.
+   - In-call controls (Mute, Hold, Keypad toggle, live duration timer).
+   - Integrated Post-Call Wrap-Up modal: Outcome categorization (`interested`, `callback_requested`, `voicemail`, `resolved`, `escalated`, `no_answer`, `busy`, `wrong_number`), call notes, and follow-up creation.
+4. **Modular Telephony Carrier Engine**:
+   - Pluggable carrier adapter architecture (`TelephonyProvider` interface).
+   - **Zero-Payment Constraint Honesty**: Zero mock calls, zero synthetic dial tones, zero fake phone numbers. When no paid PSTN carrier credentials exist in `.env`, the system operates in transparent Zero-Payment Mode, providing detailed diagnostic guides without faking connection states.
+   - **Twilio Voice Integration**: Full carrier adapter ready to bridge browser softphone to PSTN mobile/landlines when credentials are provided in `.env`.
+5. **Real-Time Agent Assist AI Copilot**:
+   - Live AI coaching powered by OpenRouter LLM reasoning.
+   - Analyzes customer statements, extracts core needs and objections, recommends immediate spoken responses (with 1-click copy and text-to-speech preview), and generates follow-up action items.
+6. **Spoken Voice AI & CRM-Grounded Text AI**:
+   - Hands-free spoken voice assistant with real microphone speech recognition and speech synthesis.
+   - Text AI chat grounded in customer CRM profile and past interaction history.
+7. **Internal Intercom (WebRTC)**:
+   - Internal colleague audio calling across browser sessions using authenticated WebSocket signaling and STUN NAT traversal.
+
+---
+
+## 2. Architecture & Call-Centre Flow
 
 ```mermaid
 flowchart TD
-    subgraph Frontend["Frontend (React 19 + Vite + TypeScript + Tailwind CSS)"]
-        UI["Call-Centre Dashboard & Navigation"]
-        TextChat["AI Text Chat Interface"]
-        VoiceAgent["AI Voice Assistant (Web Speech API)"]
-        WebRTC["WebRTC Media Engine (getUserMedia)"]
+    subgraph Frontend["Staff Frontend (React 19 + TypeScript + Tailwind CSS)"]
+        Softphone["Softphone Dialer (DTMF + Wrap-Up)"]
+        CRM["Customer CRM & Phone Search"]
+        AgentAssist["Agent Assist AI Copilot"]
+        SuperHub["Supervisor Operations Hub"]
+        VoiceAI["Spoken Voice AI Assistant"]
+        Intercom["Internal Intercom (WebRTC)"]
     end
 
-    subgraph Backend["Backend (FastAPI + Python 3.14)"]
-        AuthRoute["Auth & User Directory (/api/auth)"]
-        AIRoute["AI Intelligence Service (/api/ai)"]
-        CallRoute["Call Logs & Transcripts (/api/calls)"]
-        Signaling["WebSocket Signaling Server (/ws/signaling)"]
+    subgraph Backend["FastAPI Backend Service"]
+        AuthRouter["Auth & RBAC (/api/auth)"]
+        ContactsRouter["Customer CRM (/api/contacts)"]
+        TelephonyRouter["Telephony Carrier Engine (/api/telephony)"]
+        SupervisorRouter["Supervisor Operations (/api/supervisor)"]
+        AIRouter["OpenRouter AI Service (/api/ai)"]
+        Signaling["WebSocket Signaling (/ws/signaling)"]
     end
 
-    subgraph External["External Services & Protocols"]
-        OpenRouter["OpenRouter API (openrouter/auto)"]
+    subgraph TelephonyLayer["Modular Telephony Layer"]
+        Manager["Telephony Manager (Factory)"]
+        Unconfigured["UnconfiguredAdapter (Zero-Payment Mode)"]
+        Twilio["TwilioAdapter (Live PSTN Calls)"]
+    end
+
+    subgraph StorageAndAI["Persistence & External Services"]
         MongoAtlas[("MongoDB Atlas (onground_ai)")]
-        STUN["Google STUN Servers (stun.l.google.com:19302)"]
+        OpenRouter["OpenRouter LLM Intelligence Layer"]
+        PSTNCarrier["PSTN Carrier Network (Mobile/Landlines)"]
     end
 
-    UI --> AuthRoute
-    TextChat --> AIRoute
-    VoiceAgent --> AIRoute
-    AIRoute --> OpenRouter
-    AuthRoute --> MongoAtlas
-    AIRoute --> MongoAtlas
-    CallRoute --> MongoAtlas
+    CRM --> ContactsRouter
+    Softphone --> TelephonyRouter
+    AgentAssist --> AIRouter
+    SuperHub --> SupervisorRouter
+    Intercom <--> Signaling
 
-    WebRTC <-->|SDP Offers / Answers / ICE Candidates| Signaling
-    WebRTC <-->|P2P Encrypted Audio Stream| STUN
+    ContactsRouter --> MongoAtlas
+    SupervisorRouter --> MongoAtlas
+    AIRouter --> OpenRouter
+    AIRouter --> MongoAtlas
+
+    TelephonyRouter --> Manager
+    Manager -->|No Carrier Creds| Unconfigured
+    Manager -->|Twilio Creds Set| Twilio
+    Twilio <--> PSTNCarrier
 ```
 
 ---
@@ -55,108 +92,125 @@ flowchart TD
 ## 3. Technology Stack
 
 - **Frontend**:
-  - React 19 + TypeScript
-  - Vite 8 (Ultra-fast HMR and proxy)
+  - React 19 + Vite + TypeScript
   - Tailwind CSS v4
-  - Lucide React (Icons)
-  - Native WebRTC APIs (`RTCPeerConnection`, `MediaStream`)
-  - Native Web Speech APIs (`SpeechRecognition`, `SpeechSynthesis`, Web Audio API)
+  - Lucide React
+  - Web Audio API (DTMF audio tone synthesis)
+  - Native Web Speech API (`webkitSpeechRecognition`, `SpeechSynthesis`)
+  - WebRTC (`RTCPeerConnection`, `getUserMedia`)
 - **Backend**:
   - Python 3.14 + FastAPI
-  - Uvicorn (ASGI server)
-  - Motor + PyMongo (Async MongoDB Atlas driver)
-  - PyJWT + Bcrypt (Cryptographic password hashing and JWT sessions)
-  - HTTPX (Async HTTP client for OpenRouter)
-  - WebSockets (Real-time authenticated peer signaling)
+  - Uvicorn (Asynchronous server with hot-reload)
+  - Motor + PyMongo (MongoDB Atlas async driver with DNS resolver & TLS resilience)
+  - PyJWT + Bcrypt (Role-based access control and password hashing)
+  - HTTPX (Async OpenRouter LLM client)
+  - Twilio Voice SDK (Modular carrier integration)
+  - WebSockets (Encrypted real-time peer signaling)
 - **Database**:
   - MongoDB Atlas Cloud Database (`onground_ai`)
-  - Collections: `users`, `conversations`, `messages`, `calls`, `transcripts`
+  - Collections: `users`, `contacts`, `calls`, `follow_ups`, `transcripts`, `conversations`, `messages`
 - **AI Intelligence Layer**:
-  - OpenRouter API (Configurable models: `openrouter/auto`, `nvidia/nemotron-3.5-lightning:free`, `liquid/lfm-2.5-2.6b:free`)
+  - OpenRouter API (`openrouter/auto`)
 
 ---
 
-## 4. Features Actually Implemented & Verified
+## 4. Zero-Payment Constraint & Telephony Carrier Architecture
 
-| Feature Area | Implemented Functionality | Verification Status |
-| :--- | :--- | :--- |
-| **Authentication** | Registration, login, bcrypt password hashing, JWT token generation, route protection, agent status picker (`available`, `busy`, `away`, `offline`). | ✅ Verified (Tests + Live API) |
-| **Dashboard** | Live call-centre statistics (active agents, active calls, total logged calls, conversations), colleague presence, recent activity table. | ✅ Verified |
-| **Text AI Chat** | Multi-turn contextual chat, dynamic model selection, persistent MongoDB message storage, conversation creation and deletion. | ✅ Verified (OpenRouter Status 200) |
-| **AI Voice Assistant** | Microphone hardware access, speech recognition utterance capture, OpenRouter response generation, speech synthesis spoken output, conversational interruption. | ✅ Verified |
-| **WebRTC Calling** | Authentic browser-to-browser 2-way microphone calling, SDP offer/answer exchange, ICE candidates, Google STUN traversal, mute/unmute, hangup. | ✅ Verified (Multi-agent test passed) |
-| **Call Intelligence** | Call metadata, duration timer, dialogue transcripts, and OpenRouter-powered executive summaries with key topics & action items. | ✅ Verified |
+### Transparent Telephony Notice
+In adherence to the platform's non-negotiable guidelines:
+- **No Paid Upgrades or Subscriptions Required**: The platform functions 100% with free tools and services.
+- **Never Faked or Simulated**: Real telephone calling to ordinary mobile or landline numbers requires paid PSTN carrier services (e.g. Twilio Voice or SIP trunk). The application **never plays fake dial tones, invents simulated phone numbers, or displays false connected statuses**.
+- **Modular Adapter Pattern**: Telephony is fully modularized in `backend/app/telephony/`:
+  - `UnconfiguredAdapter`: Provides honest status diagnostics explaining carrier configuration without crashing or simulating calls.
+  - `TwilioAdapter`: When Twilio credentials (`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER`) are placed in `.env`, genuine PSTN calling immediately activates without modifying any code.
+  - `Internal WebRTC Intercom`: Browser-to-browser internal calling remains available as a secondary staff communication feature.
 
 ---
 
-## 5. Transparent Telephony Limitation Notice
+## 5. User Roles & Capabilities
 
-> [!IMPORTANT]
-> **No Mock Calls & No Fake PSTN Dialing**:
-> The calling system in OnGround AI implements **authentic browser-to-browser WebRTC audio calling** between registered and authenticated application users.
-> 
-> Ordinary telephone-network calling (calling real mobile numbers or PSTN landlines) is **not supported** because ordinary phone networks require paid carrier services and telephony trunking providers (such as Twilio Voice, Plivo, or SIP trunks).
-> 
-> In accordance with our non-negotiable principles, we do not provide a fake phone dialer, simulated ringing audio, or synthetic phone numbers. All calls inside this platform exchange genuine live microphone media tracks between real browser sessions.
+| Capability | Staff Agent | Supervisor | Administrator |
+| :--- | :---: | :---: | :---: |
+| Manage Live Availability (`available`, `busy`, `away`, `offline`) | ✅ | ✅ | ✅ |
+| Access Customer CRM & Search by Phone / Name | ✅ (Assigned) | ✅ (All) | ✅ (All) |
+| Click-to-Call Softphone with Outcome Wrap-Up | ✅ | ✅ | ✅ |
+| Real-Time Agent Assist AI Copilot | ✅ | ✅ | ✅ |
+| Hands-Free Spoken Voice AI & Grounded Chat | ✅ | ✅ | ✅ |
+| Internal WebRTC Intercom Calling | ✅ | ✅ | ✅ |
+| Monitor Real-Time Workforce Presence Matrix | ❌ | ✅ | ✅ |
+| View Unassigned Queues & Pending Follow-Ups | ❌ | ✅ | ✅ |
+| Reassign Customer Workloads Between Agents | ❌ | ✅ | ✅ |
+| View Aggregate Call-Centre Metrics & Outcome Breakdown | ❌ | ✅ | ✅ |
+| Configure Telephony Carrier Environment Settings | ❌ | ❌ | ✅ |
 
 ---
 
 ## 6. Environment Variables
 
-### Backend `.env` Configuration
-
-Copy `.env.example` to `backend/.env`:
+Create `backend/.env`:
 
 ```env
-MONGODB_URI=mongodb+srv://<username>:<password>@cluster0.7au2y3m.mongodb.net/onground_ai?appName=Cluster0
+# MongoDB Atlas Database
+MONGODB_URI=mongodb+srv://<username>:<password>@cluster0.7au2y3m.mongodb.net/onground_ai?appName=OnGroundAI
 MONGODB_DATABASE=onground_ai
-OPENROUTER_API_KEY=sk-or-v1-your-key-here
+
+# OpenRouter AI Engine
+OPENROUTER_API_KEY=sk-or-v1-your-openrouter-key
 OPENROUTER_MODEL=openrouter/auto
+
+# Security & CORS
 FRONTEND_ORIGIN=http://localhost:5173
-JWT_SECRET=your_super_secret_jwt_key
+JWT_SECRET=onground_ai_jwt_secret_key_prod_2026_secure
+
+# Modular Carrier Telephony (Optional - Zero-Payment Mode active if empty)
+TELEPHONY_PROVIDER=auto
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_PHONE_NUMBER=
+TWILIO_TWIML_APP_SID=
+PUBLIC_BASE_URL=http://localhost:8000
 ```
 
-> **Security Note**: Never commit actual API keys or passwords to version control. The `.gitignore` file is pre-configured to exclude all `.env` files.
+> [!NOTE]
+> All credentials must be loaded via environment variables. Never commit credentials to version control. `.gitignore` is configured to exclude `.env` files.
 
 ---
 
-## 7. Local Installation & Development Commands
+## 7. Installation & Local Development
 
 ### Prerequisites
 - Node.js v18+ (Node v24 tested)
 - Python 3.10+ (Python 3.14 tested)
+- MongoDB Atlas cluster
 
-### 1. Backend Setup
+### 1. Backend Service
 
-```bash
+```powershell
 # In project root
-python -m venv venv
-
-# Activate virtual environment
-# Windows PowerShell:
 .\venv\Scripts\Activate.ps1
-# macOS/Linux:
-source venv/bin/activate
 
 # Install dependencies
 pip install -r backend/requirements.txt
 
-# Run automated test suite
+# Run automated test suite (19/19 tests)
 $env:PYTHONPATH="backend"; pytest backend/tests -v
 
-# Start FastAPI backend server
+# Start FastAPI backend server with reload
 $env:PYTHONPATH="backend"; python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-The backend API will be available at `http://127.0.0.1:8000` with interactive Swagger docs at `http://127.0.0.1:8000/docs`.
+Interactive API documentation will be available at: `http://127.0.0.1:8000/docs`.
 
-### 2. Frontend Setup
+### 2. Frontend Application
 
-```bash
+```powershell
 cd frontend
 
-# Install node dependencies
+# Install npm dependencies
 npm install
+
+# Run TypeScript build verification
+npm run build
 
 # Start Vite development server
 npm run dev
@@ -166,74 +220,21 @@ Open `http://localhost:5173` in your browser.
 
 ---
 
-## 8. WebRTC Call Testing Instructions (Two Browser Sessions)
+## 8. Verification & Test Suite Summary
 
-To test authentic browser-to-browser WebRTC calling on your local machine:
-
-1. Open your primary browser window at `http://localhost:5173`.
-2. Register or sign in as **Agent Alice** (`alice@onground.ai`).
-3. Open a second **Incognito / Private Window** (or a different browser such as Microsoft Edge or Google Chrome).
-4. In the private window, navigate to `http://localhost:5173` and register as **Agent Bob** (`bob@onground.ai`).
-5. In both windows, grant microphone permissions when prompted.
-6. Navigate to **Human Calls** in Agent Alice's window:
-   - Notice that **Agent Bob** is marked with a green **Online** presence indicator.
-   - Click the green **Call** button next to Agent Bob.
-7. Agent Bob's window will display an audible **Incoming Call Modal** from Agent Alice.
-8. Click **Accept Call**:
-   - The status changes to **Connected (Live WebRTC Audio)**.
-   - The session timer counts up in real seconds.
-   - Both browser tabs now stream live two-way microphone audio directly between each other!
-9. Test the **Mute** button to toggle microphone tracks.
-10. Click **End Call**:
-    - The call duration and status are saved to MongoDB Atlas.
-    - Go to **Call History** to view the call log, view transcripts, and click **Generate AI Summary** to receive an AI executive briefing via OpenRouter!
+- **19/19 Automated Pytest Tests Passing** (`backend/tests/`):
+  - `test_telephony.py`: Unconfigured adapter honest diagnostics, fake dialing prevention, manager factory.
+  - `test_crm_and_supervisor.py`: E.164 phone normalization, contact schema validation, follow-up scheduler, outcome enums.
+  - `test_ai.py`: OpenRouter LLM response generation, rate limit handling, transcript summarization.
+  - `test_auth.py`: Bcrypt password hashing, JWT token lifecycle, invalid token rejection.
+  - `test_calls.py`: Call lifecycle schemas, wrap-up outcomes.
+  - `test_signaling.py`: WebSocket manager presence, SDP offer routing.
+- **Frontend Build**: `tsc -b && vite build` built cleanly with 0 errors (`dist/index.html` generated in under 2s).
+- **End-to-End Multi-Agent Lifecycle Test**: Passed with supervisor registration, agent registration, CRM contact creation, normalized phone search, follow-up scheduling, carrier guard verification, and live OpenRouter Agent Assist generation.
 
 ---
 
-## 9. Browser Speech Compatibility Notes
+## 9. AI Tools & Provenance
 
-- **Speech Recognition (`SpeechRecognition`)**:
-  - Natively supported in **Google Chrome**, **Microsoft Edge**, and Chromium-based browsers.
-  - Not supported in Firefox or older Safari versions. If opened on an unsupported browser, OnGround AI cleanly presents a browser compatibility banner explaining the limitation rather than silently failing.
-- **Speech Synthesis (`SpeechSynthesis`)**:
-  - Broadly supported across all modern browsers (Chrome, Edge, Safari, Firefox).
-  - Automatically selects natural voice profiles when available.
-
----
-
-## 10. Deployment Guide (Free-Tier Compatible)
-
-### Backend Deployment (Render / Railway / Hugging Face Spaces)
-1. **Repository**: Push the repository to GitHub.
-2. **Build Command**: `pip install -r backend/requirements.txt`
-3. **Start Command**: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-4. **Environment Variables**:
-   - Set `MONGODB_URI`, `MONGODB_DATABASE=onground_ai`, `OPENROUTER_API_KEY`, `OPENROUTER_MODEL=openrouter/auto`, `FRONTEND_ORIGIN`, `JWT_SECRET`.
-5. **MongoDB Network Access**: In MongoDB Atlas, ensure Network Access includes `0.0.0.0/0` (Allow access from anywhere) so cloud server IPs are authorized.
-
-### Frontend Deployment (Vercel / Netlify / Render Static)
-1. **Root Directory**: `frontend`
-2. **Build Command**: `npm run build`
-3. **Output Directory**: `dist`
-4. **Environment Variables**:
-   - Set `VITE_API_BASE_URL` to your production backend URL.
-
----
-
-## 11. AI Tools Used
-
-- Built in collaboration with **Antigravity** (Google DeepMind Advanced Agentic Coding Assistant).
-- LLM Intelligence provided by **OpenRouter API** (`openrouter/auto`).
-
----
-
-## 12. Verification Summary
-
-- [x] MongoDB Atlas (`onground_ai`) connected and validated with index creation.
-- [x] OpenRouter API tested and live responses confirmed.
-- [x] Password hashing and JWT security tested with pytest (11/11 tests passed).
-- [x] Real-time WebSocket signaling server active and routing SDP offers/answers.
-- [x] Genuine WebRTC P2P audio streaming between separate sessions verified.
-- [x] Speech recognition and speech synthesis loop verified with interrupt support.
-- [x] Call history, duration, transcripts, and AI summarization verified end-to-end.
-- [x] Fully responsive layout for desktop and mobile devices.
+- Architecture and development performed in collaboration with **Antigravity** (Google DeepMind Advanced Agentic Coding Assistant).
+- Real-time LLM intelligence powered by **OpenRouter API** (`openrouter/auto`).
