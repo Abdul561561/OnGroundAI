@@ -1,0 +1,98 @@
+import logging
+import certifi
+import dns.resolver
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+# Configure DNS resolver with reliable nameservers to guarantee fast SRV resolution across all networks
+try:
+    resolver = dns.resolver.get_default_resolver()
+    resolver.nameservers = ['8.8.8.8', '1.1.1.1', '8.8.4.4'] + resolver.nameservers
+    resolver.lifetime = 10.0
+except Exception as e:
+    logger.warning("Could not set custom DNS resolver nameservers: %s", e)
+
+import os
+
+# Fallback URI to ensure high-availability if the primary cluster has IP Whitelist restrictions
+BACKUP_MONGO_URI = os.getenv("BACKUP_MONGODB_URI", "")
+
+class DatabaseManager:
+    client: AsyncIOMotorClient = None
+    db: AsyncIOMotorDatabase = None
+
+db_manager = DatabaseManager()
+
+async def connect_to_mongo():
+    primary_uri = settings.MONGODB_URI
+    logger.info("Connecting to primary MongoDB Atlas at database '%s'...", settings.MONGODB_DATABASE)
+
+    connected = False
+    for uri, label in [(primary_uri, "Primary Cluster"), (BACKUP_MONGO_URI, "Backup Atlas Cluster")]:
+        try:
+            client = AsyncIOMotorClient(
+                uri,
+                tlsCAFile=certifi.where(),
+                serverSelectionTimeoutMS=5000
+            )
+            # Test connection
+            await client.admin.command("ping")
+            db_manager.client = client
+            db_manager.db = client[settings.MONGODB_DATABASE]
+            logger.info("Successfully connected to MongoDB Atlas (%s) on database '%s'.", label, settings.MONGODB_DATABASE)
+            connected = True
+            break
+        except Exception as e:
+            logger.warning(
+                "Could not connect to MongoDB Atlas (%s): %s. "
+                "Note: If SSL TLS alert occurs, please ensure 0.0.0.0/0 is enabled in MongoDB Atlas Network Access.",
+                label,
+                e
+            )
+
+    if not connected:
+        raise RuntimeError("Failed to connect to both primary and backup MongoDB Atlas clusters.")
+
+    # Ensure required indexes
+    await _create_indexes()
+
+async def _create_indexes():
+    """Create database indexes for performance, search and unique constraints."""
+    db = db_manager.db
+    if db is None:
+        return
+
+    try:
+        # Unique email constraint on users
+        await db.users.create_index("email", unique=True)
+        await db.users.create_index("status")
+
+        # Conversations indexes
+        await db.conversations.create_index([("user_id", 1), ("updated_at", -1)])
+        await db.conversations.create_index("type")
+
+        # Messages indexes
+        await db.messages.create_index([("conversation_id", 1), ("created_at", 1)])
+
+        # Calls indexes
+        await db.calls.create_index([("caller_user_id", 1), ("created_at", -1)])
+        await db.calls.create_index([("recipient_user_id", 1), ("created_at", -1)])
+        await db.calls.create_index("status")
+
+        # Transcripts indexes
+        await db.transcripts.create_index("call_id")
+        await db.transcripts.create_index("conversation_id")
+
+        logger.info("MongoDB indexes verified successfully.")
+    except Exception as e:
+        logger.warning("Error creating MongoDB indexes: %s", e)
+
+async def close_mongo_connection():
+    if db_manager.client:
+        db_manager.client.close()
+        logger.info("MongoDB connection closed.")
+
+def get_db() -> AsyncIOMotorDatabase:
+    return db_manager.db
