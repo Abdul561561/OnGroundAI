@@ -186,6 +186,10 @@ async def update_user_role(
         status=target.get("status", "available")
     )
 
+import re
+
+STAFF_EXCLUDE_TEST_PATTERN = re.compile(r"^(test\.(agent|sup)\.|staff\.(verifier|demo)\.)", re.IGNORECASE)
+
 @router.get("/users", response_model=List[UserResponse])
 async def list_directory_users(current_user: Dict[str, Any] = Depends(get_current_user)):
     """List colleagues with verified real-time presence and roles."""
@@ -193,20 +197,27 @@ async def list_directory_users(current_user: Dict[str, Any] = Depends(get_curren
     if db is None:
         raise HTTPException(status_code=503, detail="Database service unavailable.")
 
-    cursor = db.users.find({}).sort("name", 1).limit(100)
+    cursor = db.users.find({}, {"password_hash": 0}).sort("name", 1).limit(100)
     users = await cursor.to_list(length=100)
 
     result = []
-    online_uids = manager.get_online_user_ids()
+    online_uids = set(manager.get_online_user_ids())
 
     for u in users:
-        is_socket_online = u["_id"] in online_uids
+        uid = u["_id"]
+        if uid == current_user["_id"]:
+            continue
+        is_socket_online = uid in online_uids
+        # Hide offline ephemeral pytest accounts while keeping online test peers visible during E2E tests
+        if not is_socket_online and STAFF_EXCLUDE_TEST_PATTERN.match(u.get("email", "")):
+            continue
+
         live_status = u.get("status", "available")
-        if not is_socket_online and live_status != "busy":
+        if not is_socket_online:
             live_status = "offline"
 
         result.append(UserResponse(
-            _id=u["_id"],
+            _id=uid,
             name=u["name"],
             email=u["email"],
             role=u.get("role", "agent"),
@@ -214,6 +225,8 @@ async def list_directory_users(current_user: Dict[str, Any] = Depends(get_curren
             status=live_status
         ))
 
+    # Sort online colleagues first, then alphabetically
+    result.sort(key=lambda x: (0 if x.status != "offline" else 1, x.name.lower()))
     return result
 
 @router.get("/agents", response_model=List[UserResponse])
@@ -223,17 +236,23 @@ async def list_assignable_agents(current_user: Dict[str, Any] = Depends(get_curr
     if db is None:
         raise HTTPException(status_code=503, detail="Database service unavailable.")
 
-    cursor = db.users.find({}).sort("name", 1).limit(100)
+    cursor = db.users.find({}, {"password_hash": 0}).sort("name", 1).limit(100)
     users = await cursor.to_list(length=100)
+    online_uids = set(manager.get_online_user_ids())
 
-    return [
-        UserResponse(
-            _id=u["_id"],
+    result = []
+    for u in users:
+        uid = u["_id"]
+        is_socket_online = uid in online_uids
+        if not is_socket_online and uid != current_user["_id"] and STAFF_EXCLUDE_TEST_PATTERN.match(u.get("email", "")):
+            continue
+        live_status = u.get("status", "available") if is_socket_online else "offline"
+        result.append(UserResponse(
+            _id=uid,
             name=u["name"],
             email=u["email"],
             role=u.get("role", "agent"),
             created_at=u.get("created_at", ""),
-            status=u.get("status", "available")
-        )
-        for u in users
-    ]
+            status=live_status
+        ))
+    return result

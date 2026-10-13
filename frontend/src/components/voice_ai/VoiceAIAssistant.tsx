@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../../services/api';
 import { speechService, SpeechService } from '../../services/speech';
-import { Message } from '../../types';
+import { Message, Contact } from '../../types';
 import {
   Mic,
   MicOff,
@@ -13,6 +13,11 @@ import {
   Sparkles,
   Bot,
   User as UserIcon,
+  PhoneForwarded,
+  Headphones,
+  CheckCircle2,
+  Briefcase,
+  Send,
 } from 'lucide-react';
 
 export const VoiceAIAssistant: React.FC = () => {
@@ -21,15 +26,27 @@ export const VoiceAIAssistant: React.FC = () => {
   const [statusText, setStatusText] = useState<string>('Press Start to speak with OnGround AI');
   const [agentState, setAgentState] = useState<'idle' | 'listening' | 'processing' | 'speaking'>('idle');
 
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
+  const [manualInput, setManualInput] = useState<string>('');
+  const [caseSavedBanner, setCaseSavedBanner] = useState<string | null>(null);
+  const [isCreatingCase, setIsCreatingCase] = useState<boolean>(false);
+
   const [currentUtterance, setCurrentUtterance] = useState<string>('');
+  const [lastUtterance, setLastUtterance] = useState<string>('');
+  const [isMuted, setIsMuted] = useState<boolean>(false);
   const [dialogue, setDialogue] = useState<Message[]>([]);
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
+  const [escalatedTicket, setEscalatedTicket] = useState<{ id: string; reason: string } | null>(null);
+  const [isEscalating, setIsEscalating] = useState<boolean>(false);
 
   const recognitionSupported = SpeechService.isRecognitionSupported();
-  const synthesisSupported = SpeechService.isSynthesisSupported();
 
   const conversationIdRef = useRef<string | null>(null);
   const isVoiceActiveRef = useRef<boolean>(false);
+  const agentStateRef = useRef<'idle' | 'listening' | 'processing' | 'speaking'>('idle');
+  const isMutedRef = useRef<boolean>(false);
+  const selectedContactRef = useRef<Contact | null>(null);
   const transcriptBottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -41,6 +58,19 @@ export const VoiceAIAssistant: React.FC = () => {
   }, [isVoiceActive]);
 
   useEffect(() => {
+    agentStateRef.current = agentState;
+  }, [agentState]);
+
+  useEffect(() => {
+    isMutedRef.current = isMuted;
+  }, [isMuted]);
+
+  useEffect(() => {
+    selectedContactRef.current = selectedContact;
+  }, [selectedContact]);
+
+  useEffect(() => {
+    api.getContacts().then(setContacts).catch(() => {});
     return () => {
       speechService.stopListening();
       speechService.stopSpeaking();
@@ -68,6 +98,7 @@ export const VoiceAIAssistant: React.FC = () => {
       stream.getTracks().forEach((track) => track.stop());
 
       setIsVoiceActive(true);
+      isVoiceActiveRef.current = true;
       startListeningCycle();
     } catch (err: any) {
       setErrorNotice(
@@ -76,12 +107,19 @@ export const VoiceAIAssistant: React.FC = () => {
           : `Microphone access error: ${err.message}`
       );
       setIsVoiceActive(false);
+      isVoiceActiveRef.current = false;
       setAgentState('idle');
     }
   };
 
   const startListeningCycle = () => {
+    if (isMutedRef.current) {
+      setAgentState('idle');
+      setStatusText('Microphone is muted.');
+      return;
+    }
     setAgentState('listening');
+    agentStateRef.current = 'listening';
     setStatusText('Listening to your voice... Speak naturally.');
     setCurrentUtterance('');
 
@@ -96,29 +134,113 @@ export const VoiceAIAssistant: React.FC = () => {
       },
       onError: (errMsg) => {
         setErrorNotice(errMsg);
-        if (isVoiceActiveRef.current) {
-          // Retry listening if still active
+        if (isVoiceActiveRef.current && !isMutedRef.current) {
           setTimeout(() => {
-            if (isVoiceActiveRef.current) startListeningCycle();
+            if (isVoiceActiveRef.current && !isMutedRef.current) startListeningCycle();
           }, 1500);
         }
       },
       onEnd: () => {
-        // If recognition stops but we're still listening without a final result, resume
-        if (isVoiceActiveRef.current && agentState === 'listening') {
+        if (isVoiceActiveRef.current && agentStateRef.current === 'listening' && !isMutedRef.current) {
           startListeningCycle();
         }
       },
     });
   };
 
+  const handleEscalateToHuman = async (customReason?: string) => {
+    setIsEscalating(true);
+    setStatusText('Escalating call to human agent queue...');
+    setAgentState('speaking');
+    speechService.stopListening();
+
+    try {
+      const fullTranscript = dialogue
+        .map((m) => `${m.role === 'user' ? 'Customer' : 'AI'}: ${m.content}`)
+        .join('\n');
+
+      const c = selectedContactRef.current;
+      const ticket = await api.escalateAiCallToHuman({
+        customer_name: c ? c.name : 'Voice AI Caller',
+        customer_phone: c?.phone_number,
+        contact_id: c?._id,
+        reason: customReason || 'Customer requested human agent transfer during spoken Voice AI session.',
+        full_transcript: fullTranscript || currentUtterance || 'Live voice conversation escalated.',
+        priority: 'urgent',
+      });
+
+      setEscalatedTicket({ id: ticket._id, reason: ticket.reason || 'Escalated to human queue' });
+
+      const escalationMsg: Message = {
+        _id: `escalation-${Date.now()}`,
+        conversation_id: conversationIdRef.current || '',
+        role: 'system',
+        content: `🚨 Mode C Escalation: Transferred to Human Agent Queue (Ticket #${ticket._id.slice(-6).toUpperCase()}). Staff has received real-time broadcast.`,
+        created_at: new Date().toISOString(),
+      };
+      setDialogue((prev) => [...prev, escalationMsg]);
+
+      speakResponse(
+        'I understand and am transferring your call to our human agent queue right now. Please hold while an available agent connects with you.'
+      );
+    } catch (err: any) {
+      setErrorNotice(`Escalation failed: ${err.message}`);
+      setAgentState('idle');
+      setStatusText('Escalation failed. You may retry or continue speaking.');
+    } finally {
+      setIsEscalating(false);
+    }
+  };
+
+  const handleCreateCaseFromVoiceSession = async () => {
+    if (dialogue.length === 0) return;
+    setIsCreatingCase(true);
+    setErrorNotice(null);
+    try {
+      const c = selectedContactRef.current;
+      const summaryLines = dialogue
+        .slice(-6)
+        .map((m) => `${m.role === 'user' ? 'Customer' : 'Voice AI'}: ${m.content}`)
+        .join('\n');
+      const lastUserMsg = [...dialogue].reverse().find((m) => m.role === 'user')?.content || 'Voice AI Support Inquiry';
+
+      const createdCase = await api.createCase({
+        title: `Voice AI Session: ${lastUserMsg.slice(0, 60)}`,
+        description: summaryLines,
+        customer_id: c?._id,
+        customer_name: c?.name || 'Voice AI Caller',
+        customer_phone: c?.phone_number || '',
+        priority: 'medium',
+      });
+
+      if (c) {
+        await api.updateContact(c._id, {
+          status: 'in_progress',
+          notes: c.notes
+            ? `${c.notes}\n[Voice AI Case #${createdCase._id.slice(-6)}]: ${lastUserMsg}`
+            : `[Voice AI Case #${createdCase._id.slice(-6)}]: ${lastUserMsg}`,
+        });
+      }
+
+      setCaseSavedBanner(
+        `Support Case #${createdCase._id.slice(-6).toUpperCase()} recorded in MongoDB${c ? ` and linked to ${c.name}` : ''}.`
+      );
+    } catch (err: any) {
+      setErrorNotice(`Failed to save case: ${err.message}`);
+    } finally {
+      setIsCreatingCase(false);
+    }
+  };
+
   const processVoiceInput = async (spokenText: string) => {
     if (!spokenText.trim()) {
-      if (isVoiceActiveRef.current) startListeningCycle();
+      if (isVoiceActiveRef.current && !isMutedRef.current) startListeningCycle();
       return;
     }
 
+    setLastUtterance(spokenText);
     setAgentState('processing');
+    agentStateRef.current = 'processing';
     setStatusText('OnGround AI is thinking...');
 
     // Optimistically show user speech in transcript
@@ -132,12 +254,21 @@ export const VoiceAIAssistant: React.FC = () => {
     setDialogue((prev) => [...prev, userMsg]);
     setCurrentUtterance('');
 
+    // Mode C Escalation Intent Check: Voice AI -> Human Call Queue
+    const escalationRegex = /\b(human|agent|operator|representative|supervisor|transfer|person|someone else|manager|real person)\b/i;
+    if (escalationRegex.test(spokenText)) {
+      await handleEscalateToHuman(`Caller requested: "${spokenText}"`);
+      return;
+    }
+
     try {
-      // Call backend AI
+      // Call backend AI grounded in selected customer if chosen
       const res = await api.sendMessage(
         spokenText,
         conversationIdRef.current || undefined,
-        'voice_ai'
+        'voice_ai',
+        undefined,
+        selectedContactRef.current?._id
       );
 
       if (!conversationIdRef.current) {
@@ -155,10 +286,11 @@ export const VoiceAIAssistant: React.FC = () => {
     } catch (err: any) {
       setErrorNotice(`AI Error: ${err.message}`);
       setAgentState('idle');
+      agentStateRef.current = 'idle';
       setStatusText('Failed to receive response from OpenRouter.');
-      if (isVoiceActiveRef.current) {
+      if (isVoiceActiveRef.current && !isMutedRef.current) {
         setTimeout(() => {
-          if (isVoiceActiveRef.current) startListeningCycle();
+          if (isVoiceActiveRef.current && !isMutedRef.current) startListeningCycle();
         }, 2000);
       }
     }
@@ -166,22 +298,26 @@ export const VoiceAIAssistant: React.FC = () => {
 
   const speakResponse = (text: string) => {
     setAgentState('speaking');
+    agentStateRef.current = 'speaking';
     setStatusText('OnGround AI is speaking...');
 
     speechService.speak(text, {
       onEnd: () => {
-        if (isVoiceActiveRef.current) {
-          // Seamlessly return to listening after speaking
+        if (isVoiceActiveRef.current && !isMutedRef.current) {
           startListeningCycle();
         } else {
           setAgentState('idle');
-          setStatusText('Conversation stopped.');
+          agentStateRef.current = 'idle';
+          setStatusText(isMutedRef.current ? 'Microphone is muted.' : 'Ready for next utterance.');
         }
       },
       onError: (e) => {
         console.warn('Speech synthesis error:', e);
-        if (isVoiceActiveRef.current) {
+        if (isVoiceActiveRef.current && !isMutedRef.current) {
           startListeningCycle();
+        } else {
+          setAgentState('idle');
+          agentStateRef.current = 'idle';
         }
       },
     });
@@ -190,16 +326,43 @@ export const VoiceAIAssistant: React.FC = () => {
   const handleInterrupt = () => {
     speechService.stopSpeaking();
     setStatusText('Interrupted. Listening again...');
-    if (isVoiceActive) {
+    if (isVoiceActive && !isMuted) {
       startListeningCycle();
+    } else {
+      setAgentState('idle');
     }
+  };
+
+  const handleToggleMute = () => {
+    if (isMuted) {
+      setIsMuted(false);
+      isMutedRef.current = false;
+      setStatusText('Microphone unmuted. Listening...');
+      startListeningCycle();
+    } else {
+      setIsMuted(true);
+      isMutedRef.current = true;
+      speechService.stopListening();
+      setAgentState('idle');
+      setStatusText('Microphone is muted.');
+    }
+  };
+
+  const handleRetryLast = () => {
+    if (!lastUtterance) return;
+    setErrorNotice(null);
+    processVoiceInput(lastUtterance);
   };
 
   const handleStopConversation = () => {
     speechService.stopListening();
     speechService.stopSpeaking();
     setIsVoiceActive(false);
+    isVoiceActiveRef.current = false;
+    setIsMuted(false);
+    isMutedRef.current = false;
     setAgentState('idle');
+    agentStateRef.current = 'idle';
     setStatusText('Voice conversation ended.');
     setCurrentUtterance('');
   };
@@ -218,30 +381,135 @@ export const VoiceAIAssistant: React.FC = () => {
             </span>
           </div>
           <p className="text-xs sm:text-sm text-slate-400 mt-1">
-            Real spoken input through your microphone, OpenRouter LLM intelligence, and live synthesized speech.
+            Real spoken input through your microphone, OpenRouter LLM intelligence, spoken synthesis, and CRM case logging.
           </p>
         </div>
 
-        {isVoiceActive && (
-          <div className="flex items-center gap-2">
-            {agentState === 'speaking' && (
-              <button
-                onClick={handleInterrupt}
-                className="flex items-center gap-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-semibold px-3 py-2 rounded-xl transition-all"
-              >
-                <VolumeX className="w-3.5 h-3.5" />
-                <span>Interrupt AI</span>
-              </button>
-            )}
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={selectedContact?._id || ''}
+            onChange={(e) => {
+              const found = contacts.find((c) => c._id === e.target.value) || null;
+              setSelectedContact(found);
+            }}
+            className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+          >
+            <option value="">-- Link Customer Record (Optional) --</option>
+            {contacts.map((c) => (
+              <option key={c._id} value={c._id}>
+                {c.name} ({c.phone_number})
+              </option>
+            ))}
+          </select>
+
+          {dialogue.length > 0 && (
             <button
-              onClick={handleStopConversation}
-              className="flex items-center gap-1.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold px-4 py-2 rounded-xl transition-all shadow-md shadow-rose-600/20"
+              onClick={handleCreateCaseFromVoiceSession}
+              disabled={isCreatingCase}
+              className="flex items-center gap-1.5 bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/40 text-xs font-semibold px-3 py-2 rounded-xl transition-all"
             >
-              <Square className="w-3.5 h-3.5" />
-              <span>Stop Conversation</span>
+              <Briefcase className="w-3.5 h-3.5 text-indigo-300" />
+              <span>{isCreatingCase ? 'Saving Case...' : 'Log Support Case'}</span>
             </button>
+          )}
+        </div>
+      </div>
+
+      {caseSavedBanner && (
+        <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between text-xs text-emerald-300">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{caseSavedBanner}</span>
           </div>
-        )}
+          <button onClick={() => setCaseSavedBanner(null)} className="text-emerald-400 hover:underline text-[11px]">
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {isVoiceActive && (
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <button
+            onClick={handleToggleMute}
+            className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl border transition-all ${
+              isMuted
+                ? 'bg-rose-500/20 text-rose-300 border-rose-500/40 hover:bg-rose-500/30'
+                : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+            }`}
+          >
+            {isMuted ? <MicOff className="w-3.5 h-3.5 text-rose-400" /> : <Mic className="w-3.5 h-3.5 text-blue-400" />}
+            <span>{isMuted ? 'Unmute Mic' : 'Mute Mic'}</span>
+          </button>
+
+          {agentState === 'speaking' && (
+            <button
+              onClick={handleInterrupt}
+              className="flex items-center gap-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-semibold px-3 py-2 rounded-xl transition-all"
+            >
+              <VolumeX className="w-3.5 h-3.5" />
+              <span>Interrupt AI</span>
+            </button>
+          )}
+
+          <button
+            onClick={() => handleEscalateToHuman('Manual user escalation via Mode C button')}
+            disabled={isEscalating}
+            className="flex items-center gap-1.5 bg-amber-600/30 hover:bg-amber-600/50 text-amber-200 border border-amber-500/50 text-xs font-semibold px-3 py-2 rounded-xl transition-all cursor-pointer shadow-sm shadow-amber-500/20"
+            title="Escalate call to human agent queue (Mode C)"
+          >
+            <PhoneForwarded className="w-3.5 h-3.5 text-amber-300" />
+            <span>{isEscalating ? 'Escalating...' : 'Transfer to Human'}</span>
+          </button>
+
+          <button
+            onClick={handleStopConversation}
+            className="flex items-center gap-1.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold px-4 py-2 rounded-xl transition-all shadow-md shadow-rose-600/20"
+          >
+            <Square className="w-3.5 h-3.5" />
+            <span>Stop Conversation</span>
+          </button>
+        </div>
+      )}
+
+      {/* Mode C Escalation Active Banner */}
+      {escalatedTicket && (
+        <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-200 shadow-lg shadow-amber-500/5 animate-fadeIn">
+          <div className="flex items-start sm:items-center gap-3">
+            <div className="p-2 rounded-xl bg-amber-500/20 text-amber-300 font-bold shrink-0">
+              <Headphones className="w-5 h-5 text-amber-400" />
+            </div>
+            <div>
+              <p className="font-bold text-amber-100 flex items-center gap-2">
+                <span>Mode C: AI-to-Human Escalation Transferred</span>
+                <span className="text-[10px] bg-amber-500/30 text-amber-200 px-2 py-0.5 rounded-full font-mono font-bold">
+                  Queue Ticket #{escalatedTicket.id.slice(-6).toUpperCase()}
+                </span>
+              </p>
+              <p className="text-[11px] text-amber-300/80 mt-0.5">
+                Full transcript and summary dispatched to Incoming Call Queue. All available agents have received real-time WebSocket alerts.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setEscalatedTicket(null)}
+            className="text-amber-400 hover:text-amber-200 text-xs font-semibold underline px-2 py-1 self-end sm:self-auto cursor-pointer"
+          >
+            Dismiss Alert
+          </button>
+        </div>
+      )}
+
+      {/* Architecture Transparency Banner */}
+      <div className="p-3.5 rounded-2xl bg-slate-900 border border-slate-800 text-[11px] text-slate-400 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Bot className="w-4 h-4 text-indigo-400 shrink-0" />
+          <span>
+            <strong className="text-slate-200">Audio Loop:</strong> Browser Web Speech API (Microphone Capture) → FastAPI Backend → OpenRouter LLM → Browser Speech Synthesis.
+          </span>
+        </div>
+        <span className="text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 font-semibold self-start sm:self-auto">
+          Free Browser Speech Synthesis
+        </span>
       </div>
 
       {/* Browser Compatibility Notice */}
@@ -263,12 +531,23 @@ export const VoiceAIAssistant: React.FC = () => {
       {errorNotice && (
         <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-between text-xs text-rose-300">
           <span>{errorNotice}</span>
-          <button
-            onClick={() => setErrorNotice(null)}
-            className="text-rose-400 hover:underline font-semibold ml-2"
-          >
-            Dismiss
-          </button>
+          <div className="flex items-center gap-2 ml-2">
+            {lastUtterance && (
+              <button
+                onClick={handleRetryLast}
+                className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-[11px] font-semibold flex items-center gap-1 transition-colors"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Retry</span>
+              </button>
+            )}
+            <button
+              onClick={() => setErrorNotice(null)}
+              className="text-rose-400 hover:underline font-semibold text-[11px]"
+            >
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 
@@ -355,6 +634,34 @@ export const VoiceAIAssistant: React.FC = () => {
               </button>
             </div>
           )}
+
+          {/* Direct Voice Prompt Input (triggers full OpenRouter + SpeechSynthesis audio loop) */}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!manualInput.trim() || agentState === 'processing') return;
+              const text = manualInput.trim();
+              setManualInput('');
+              processVoiceInput(text);
+            }}
+            className="pt-4 flex items-center gap-2 w-full max-w-md mx-auto"
+          >
+            <input
+              type="text"
+              value={manualInput}
+              onChange={(e) => setManualInput(e.target.value)}
+              placeholder="Or type a spoken utterance to test Voice AI..."
+              className="flex-1 bg-slate-950/90 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+            />
+            <button
+              type="submit"
+              disabled={!manualInput.trim() || agentState === 'processing'}
+              className="px-3.5 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all"
+            >
+              <Send className="w-3.5 h-3.5" />
+              <span>Speak</span>
+            </button>
+          </form>
         </div>
       </div>
 

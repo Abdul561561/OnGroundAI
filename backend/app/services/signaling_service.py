@@ -31,7 +31,7 @@ class ConnectionManager:
                 logger.info("User %s disconnected entirely.", user_id)
                 await self.broadcast_presence(user_id, is_online=False)
 
-        # If user was in an active call, notify peer
+        # If user was in an active call, notify peer and update DB
         active_call_id = self.user_active_calls.pop(user_id, None)
         if active_call_id and active_call_id in self.active_call_sessions:
             session = self.active_call_sessions[active_call_id]
@@ -48,6 +48,20 @@ class ConnectionManager:
                     "reason": "Peer disconnected unexpectedly",
                 }
             )
+
+            # Finalize call record in MongoDB to avoid orphaned status
+            try:
+                from app.database import get_db
+                from datetime import datetime, timezone
+                db = get_db()
+                if db is not None:
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    await db.calls.update_one(
+                        {"_id": active_call_id, "ended_at": None},
+                        {"$set": {"status": "ended", "ended_at": now_iso}}
+                    )
+            except Exception as e:
+                logger.warning("Error finalizing call on disconnect: %s", e)
 
     def is_user_online(self, user_id: str) -> bool:
         return user_id in self.active_connections and len(self.active_connections[user_id]) > 0
@@ -143,7 +157,7 @@ class ConnectionManager:
                 }
             )
 
-        elif msg_type == "call_answer":
+        elif msg_type in ("call_answer", "call_accepted"):
             if not target_id:
                 return
             # Forward answer to caller

@@ -20,6 +20,21 @@ class AIService:
         }
 
     @classmethod
+    async def get_grounding_context(cls) -> str:
+        """Fetch knowledge base articles to ground AI answers in company policy."""
+        try:
+            from app.database import get_db
+            db = get_db()
+            if db is not None:
+                docs = await db.knowledge_base.find({}).to_list(5)
+                if docs:
+                    snippets = [f"- {d['title']} ({d['category']}): {d['content']}" for d in docs]
+                    return "\n\n### Company Knowledge Base & Policies:\n" + "\n".join(snippets)
+        except Exception as e:
+            logger.warning("Could not fetch knowledge base grounding: %s", e)
+        return ""
+
+    @classmethod
     async def generate_response(
         cls,
         messages: List[Dict[str, str]],
@@ -34,17 +49,19 @@ class AIService:
         """
         selected_model = model or settings.OPENROUTER_MODEL or "openrouter/auto"
 
+        grounding = await cls.get_grounding_context()
         formatted_messages = []
         if system_prompt:
-            formatted_messages.append({"role": "system", "content": system_prompt})
+            formatted_messages.append({"role": "system", "content": system_prompt + grounding})
         else:
             default_sys = (
                 "You are OnGround AI, an intelligent, empathetic, and professional voice and text "
-                "intelligence assistant. Provide clear, direct, and helpful responses. For voice "
-                "interactions, keep responses conversational and concise (2-4 sentences) so they "
-                "sound natural when spoken."
+                "contact centre assistant. Provide clear, direct, and helpful responses grounded in company knowledge. "
+                "For voice interactions, keep responses conversational and concise (2-4 sentences) so they "
+                "sound natural when spoken. If the customer asks to speak with a human agent or supervisor, acknowledge "
+                "their request warmly and let them know you are transferring them to a live specialist."
             )
-            formatted_messages.append({"role": "system", "content": default_sys})
+            formatted_messages.append({"role": "system", "content": default_sys + grounding})
 
         formatted_messages.extend(messages)
 
@@ -119,6 +136,15 @@ class AIService:
                     status_code=503,
                     detail=f"Network error connecting to OpenRouter: {str(exc)}"
                 )
+
+    @classmethod
+    async def generate_call_summary(
+        cls,
+        transcript_text: str,
+        call_type: str = "call"
+    ) -> str:
+        """Alias for summarize_transcript."""
+        return await cls.summarize_transcript(transcript_text, call_type)
 
     @classmethod
     async def summarize_transcript(

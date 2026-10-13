@@ -14,6 +14,11 @@ import { VoiceAIAssistant } from './components/voice_ai/VoiceAIAssistant';
 import { UserDirectory } from './components/calls/UserDirectory';
 import { CallHistory } from './components/history/CallHistory';
 import { SettingsView } from './components/settings/SettingsView';
+import { LiveCallCentre } from './components/live_ops/LiveCallCentre';
+import { IncomingQueueView } from './components/queues/IncomingQueueView';
+import { KnowledgeBaseView } from './components/knowledge_base/KnowledgeBaseView';
+import { CasesManager } from './components/cases/CasesManager';
+import { AnalyticsReports } from './components/analytics/AnalyticsReports';
 import { IncomingCallModal } from './components/calls/IncomingCallModal';
 import { ActiveCallModal } from './components/calls/ActiveCallModal';
 import { AuthModal } from './components/auth/AuthModal';
@@ -42,9 +47,9 @@ const MainAppContent: React.FC = () => {
   // Agent Assist cross-component preload
   const [assistPreloadContact, setAssistPreloadContact] = useState<Contact | null>(null);
 
-  const handleSelectContactForCall = (phoneNumber: string, contact: Contact) => {
+  const handleSelectContactForCall = (phoneNumber: string, contact?: Contact) => {
     setSoftphonePreloadNumber(phoneNumber);
-    setSoftphonePreloadContact(contact);
+    setSoftphonePreloadContact(contact || null);
     setCurrentTab('softphone');
   };
 
@@ -186,6 +191,29 @@ const MainAppContent: React.FC = () => {
             )}
 
             {currentTab === 'supervisor' && <SupervisorHub />}
+
+            {currentTab === 'live_ops' && (
+              <LiveCallCentre
+                onNavigate={setCurrentTab}
+                onSelectForCall={handleSelectContactForCall}
+              />
+            )}
+
+            {currentTab === 'queues' && (
+              <IncomingQueueView
+                onSelectForCall={handleSelectContactForCall}
+              />
+            )}
+
+            {currentTab === 'cases' && (
+              <CasesManager
+                onSelectForCall={handleSelectContactForCall}
+              />
+            )}
+
+            {currentTab === 'knowledge_base' && <KnowledgeBaseView />}
+
+            {currentTab === 'analytics' && <AnalyticsReports />}
 
             {currentTab === 'voice_ai' && <VoiceAIAssistant />}
 

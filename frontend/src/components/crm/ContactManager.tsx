@@ -16,10 +16,14 @@ import {
   Sparkles,
   ExternalLink,
   ChevronRight,
-  X
+  X,
+  Loader2,
+  RefreshCw,
+  Edit2,
+  Save
 } from 'lucide-react';
 import { api } from '../../services/api';
-import { Contact, FollowUp, CallRecord } from '../../types';
+import { Contact, FollowUp, CallRecord, SupportCase } from '../../types';
 
 interface ContactManagerProps {
   onSelectForCall?: (phoneNumber: string, contact: Contact) => void;
@@ -35,6 +39,7 @@ export const ContactManager: React.FC<ContactManagerProps> = ({
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [assignedToMe, setAssignedToMe] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Modals & Drawers
   const [showAddModal, setShowAddModal] = useState(false);
@@ -42,8 +47,21 @@ export const ContactManager: React.FC<ContactManagerProps> = ({
   const [contactHistory, setContactHistory] = useState<{
     calls: CallRecord[];
     follow_ups: FollowUp[];
+    cases: SupportCase[];
   } | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+
+  // Edit State
+  const [isEditing, setIsEditing] = useState(false);
+  const [editForm, setEditForm] = useState<{
+    name: string;
+    phone_number: string;
+    email: string;
+    notes: string;
+    status: string;
+  }>({ name: '', phone_number: '', email: '', notes: '', status: 'new' });
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // New Contact form
   const [newContact, setNewContact] = useState({
@@ -66,11 +84,13 @@ export const ContactManager: React.FC<ContactManagerProps> = ({
 
   const loadContacts = async () => {
     setIsLoading(true);
+    setError(null);
     try {
       const data = await api.getContacts(searchQuery, statusFilter, assignedToMe);
       setContacts(data);
-    } catch (e) {
+    } catch (e: any) {
       console.error('Failed to load contacts:', e);
+      setError(e.message || 'Failed to load customer directory from MongoDB Atlas');
     } finally {
       setIsLoading(false);
     }
@@ -106,18 +126,63 @@ export const ContactManager: React.FC<ContactManagerProps> = ({
 
   const openContactDrawer = async (contact: Contact) => {
     setSelectedContact(contact);
+    setIsEditing(false);
+    setEditForm({
+      name: contact.name,
+      phone_number: contact.phone_number,
+      email: contact.email || '',
+      notes: contact.notes || '',
+      status: contact.status || 'new',
+    });
     setIsLoadingHistory(true);
     try {
       const history = await api.getContactHistory(contact._id);
       setContactHistory({
         calls: history.calls || [],
         follow_ups: history.follow_ups || [],
+        cases: history.cases || [],
       });
     } catch (err) {
       console.error('Error loading history:', err);
-      setContactHistory({ calls: [], follow_ups: [] });
+      setContactHistory({ calls: [], follow_ups: [], cases: [] });
     } finally {
       setIsLoadingHistory(false);
+    }
+  };
+
+  const handleUpdateContact = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedContact) return;
+    setIsSavingEdit(true);
+    try {
+      const updated = await api.updateContact(selectedContact._id, {
+        name: editForm.name.trim(),
+        phone_number: editForm.phone_number.trim(),
+        email: editForm.email.trim() || undefined,
+        notes: editForm.notes.trim() || undefined,
+        status: editForm.status as any,
+      });
+      setSelectedContact(updated);
+      setIsEditing(false);
+      loadContacts();
+    } catch (err: any) {
+      alert(err.message || 'Failed to update contact');
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
+  const handleDeleteContact = async (contactId: string) => {
+    if (!window.confirm('Are you sure you want to delete this customer record from MongoDB?')) return;
+    setIsDeleting(true);
+    try {
+      await api.deleteContact(contactId);
+      setSelectedContact(null);
+      loadContacts();
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete contact');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -255,14 +320,42 @@ export const ContactManager: React.FC<ContactManagerProps> = ({
               {isLoading ? (
                 <tr>
                   <td colSpan={6} className="py-12 text-center text-slate-500">
-                    Loading customer directory...
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <Loader2 className="w-5 h-5 text-indigo-400 animate-spin" />
+                      <span>Loading customer directory from MongoDB Atlas...</span>
+                    </div>
+                  </td>
+                </tr>
+              ) : error ? (
+                <tr>
+                  <td colSpan={6} className="py-12 text-center text-rose-400 space-y-2">
+                    <AlertCircle className="w-6 h-6 text-rose-500 mx-auto" />
+                    <p className="font-semibold text-white">Error Loading Customer Directory</p>
+                    <p className="text-xs text-rose-400/80 max-w-md mx-auto">{error}</p>
+                    <button
+                      onClick={loadContacts}
+                      className="mt-2 px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>Retry</span>
+                    </button>
                   </td>
                 </tr>
               ) : contacts.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-12 text-center text-slate-500 space-y-1">
-                    <p className="font-medium text-slate-400">No matching contacts found.</p>
-                    <p className="text-[11px]">Add a contact or adjust your search filter above.</p>
+                  <td colSpan={6} className="py-12 text-center text-slate-500 space-y-2">
+                    <Users className="w-8 h-8 text-slate-600 mx-auto" />
+                    <p className="font-medium text-slate-300">No matching contacts found</p>
+                    <p className="text-[11px] text-slate-500 max-w-sm mx-auto">
+                      Add a customer to populate the phone directory, or clear your search filters.
+                    </p>
+                    <button
+                      onClick={() => setShowAddModal(true)}
+                      className="mt-2 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 shadow"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Add Customer</span>
+                    </button>
                   </td>
                 </tr>
               ) : (
@@ -380,26 +473,169 @@ export const ContactManager: React.FC<ContactManagerProps> = ({
 
               {/* CRM Profile Overview */}
               <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-3 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500">Customer Status</span>
-                  {getStatusBadge(selectedContact.status)}
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500">Assigned Agent</span>
-                  <span className="text-slate-300 font-medium">{selectedContact.assigned_agent_name || 'Unassigned'}</span>
-                </div>
-                {selectedContact.email && (
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500">Email</span>
-                    <span className="text-slate-300">{selectedContact.email}</span>
+                <div className="flex items-center justify-between border-b border-slate-800/60 pb-2.5">
+                  <span className="font-bold text-white uppercase text-[11px] tracking-wider">Customer Details</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsEditing(!isEditing)}
+                      className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors border border-slate-700"
+                    >
+                      <Edit2 className="w-3 h-3 text-indigo-400" />
+                      <span>{isEditing ? 'Cancel Edit' : 'Edit Contact'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteContact(selectedContact._id)}
+                      disabled={isDeleting}
+                      className="px-2.5 py-1 bg-rose-950/30 hover:bg-rose-900/40 text-rose-300 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors border border-rose-800/40"
+                      title="Delete customer record from MongoDB Atlas"
+                    >
+                      {isDeleting ? <Loader2 className="w-3 h-3 animate-spin text-rose-400" /> : <Trash2 className="w-3 h-3 text-rose-400" />}
+                      <span>Delete</span>
+                    </button>
                   </div>
+                </div>
+
+                {isEditing ? (
+                  <form onSubmit={handleUpdateContact} className="space-y-3 pt-1">
+                    <div>
+                      <label className="block text-slate-400 font-medium mb-1 text-[11px]">Name *</label>
+                      <input
+                        type="text"
+                        required
+                        value={editForm.name}
+                        onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-white text-xs focus:outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-slate-400 font-medium mb-1 text-[11px]">Phone Number *</label>
+                        <input
+                          type="text"
+                          required
+                          value={editForm.phone_number}
+                          onChange={(e) => setEditForm({ ...editForm, phone_number: e.target.value })}
+                          className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-white font-mono text-xs focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-slate-400 font-medium mb-1 text-[11px]">Status</label>
+                        <select
+                          value={editForm.status}
+                          onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}
+                          className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-white text-xs focus:outline-none focus:border-indigo-500"
+                        >
+                          <option value="new">New Lead</option>
+                          <option value="contacted">Contacted</option>
+                          <option value="in_progress">In Progress</option>
+                          <option value="closed">Closed / Won</option>
+                          <option value="do_not_call">Do Not Call</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 font-medium mb-1 text-[11px]">Email</label>
+                      <input
+                        type="email"
+                        value={editForm.email}
+                        onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-white text-xs focus:outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 font-medium mb-1 text-[11px]">Account Notes</label>
+                      <textarea
+                        rows={2}
+                        value={editForm.notes}
+                        onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-white text-xs focus:outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setIsEditing(false)}
+                        className="px-3 py-1.5 rounded-lg border border-slate-800 text-slate-400 hover:text-white text-xs"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={isSavingEdit}
+                        className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-semibold text-xs flex items-center gap-1.5"
+                      >
+                        {isSavingEdit ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                        <span>Save to MongoDB</span>
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">Customer Status</span>
+                      {getStatusBadge(selectedContact.status)}
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">Assigned Agent</span>
+                      <span className="text-slate-300 font-medium">{selectedContact.assigned_agent_name || 'Unassigned'}</span>
+                    </div>
+                    {selectedContact.email && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-500">Email</span>
+                        <span className="text-slate-300">{selectedContact.email}</span>
+                      </div>
+                    )}
+                    {selectedContact.notes && (
+                      <div className="pt-2 border-t border-slate-800/60">
+                        <span className="text-slate-500 block mb-1">Account Notes:</span>
+                        <p className="text-slate-300 leading-relaxed bg-slate-900/60 p-2.5 rounded-lg border border-slate-800">
+                          {selectedContact.notes}
+                        </p>
+                      </div>
+                    )}
+                  </>
                 )}
-                {selectedContact.notes && (
-                  <div className="pt-2 border-t border-slate-800/60">
-                    <span className="text-slate-500 block mb-1">Account Notes:</span>
-                    <p className="text-slate-300 leading-relaxed bg-slate-900/60 p-2.5 rounded-lg border border-slate-800">
-                      {selectedContact.notes}
-                    </p>
+              </div>
+
+              {/* Linked Support Cases */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <FileText className="w-4 h-4 text-amber-400" />
+                    Support Cases ({contactHistory?.cases?.length || 0})
+                  </h3>
+                </div>
+                {contactHistory?.cases && contactHistory.cases.length > 0 ? (
+                  <div className="space-y-2">
+                    {contactHistory.cases.map((sc) => (
+                      <div
+                        key={sc._id}
+                        className="p-3 rounded-xl border border-slate-800 bg-slate-950/80 text-xs space-y-1.5"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold text-white">{sc.title}</span>
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize ${
+                            sc.status === 'resolved' || sc.status === 'closed'
+                              ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                              : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                          }`}>
+                            {sc.status.replace('_', ' ')}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 line-clamp-2">{sc.description}</p>
+                        {sc.resolution_notes && (
+                          <p className="text-[11px] text-emerald-300 bg-emerald-950/30 p-2 rounded border border-emerald-800/40">
+                            Resolution: {sc.resolution_notes}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-3 text-xs text-slate-500 bg-slate-950/40 rounded-xl border border-slate-800/40">
+                    No support cases linked to this customer yet.
                   </div>
                 )}
               </div>

@@ -41,3 +41,37 @@ def test_telephony_manager_returns_provider():
     assert provider is not None
     # Since no Twilio creds in test environment, defaults to unconfigured
     assert provider.provider_name in ["unconfigured", "twilio"]
+
+@pytest.mark.asyncio
+async def test_twilio_adapter_browser_sdk_outbound_twiml():
+    from app.telephony.twilio_adapter import TwilioAdapter
+    adapter = TwilioAdapter()
+    adapter.phone_number = "+15550001111"
+    twiml = await adapter.handle_voice_webhook({
+        "From": "client:agent-123",
+        "To": "+15559482819",
+        "agent_id": "agent-123",
+        "call_record_id": "call-rec-999"
+    })
+    assert "<Dial" in twiml
+    assert 'callerId="+15550001111"' in twiml
+    assert "<Number" in twiml
+    assert "+15559482819" in twiml
+
+@pytest.mark.asyncio
+async def test_twilio_adapter_rest_bridge_twiml():
+    from app.telephony.twilio_adapter import TwilioAdapter
+    adapter = TwilioAdapter()
+    adapter.phone_number = "+15550001111"
+    adapter.twiml_app_sid = "AP1234567890"
+    adapter.api_key_sid = "SK1234567890"
+    adapter.api_key_secret = "secret123"
+    twiml = await adapter.handle_voice_webhook({
+        "From": "+15550001111",
+        "To": "+15559482819",
+        "direction": "outbound",
+        "agent_id": "agent-123"
+    })
+    assert "<Dial" in twiml
+    assert "<Client>agent-123</Client>" in twiml
+

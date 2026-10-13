@@ -22,6 +22,9 @@ interface CallContextType {
   toggleMute: () => void;
   callError: string | null;
   clearCallError: () => void;
+  audioLevel: number;
+  isAudioPlaybackBlocked: boolean;
+  unlockAudioPlayback: () => void;
 }
 
 const CallContext = createContext<CallContextType | undefined>(undefined);
@@ -32,20 +35,37 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [onlineUserIds, setOnlineUserIds] = useState<Set<string>>(new Set());
   const [activeCall, setActiveCall] = useState<ActiveCallSession | null>(null);
   const [callError, setCallError] = useState<string | null>(null);
+  const [isAudioPlaybackBlocked, setIsAudioPlaybackBlocked] = useState<boolean>(false);
+  const [audioLevel, setAudioLevel] = useState<number>(0);
 
   const socketRef = useRef<WebSocket | null>(null);
   const webrtcRef = useRef<WebRTCManager | null>(null);
   const timerRef = useRef<any>(null);
+  const audioMeterIntervalRef = useRef<any>(null);
+  const ringTimeoutRef = useRef<any>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const pendingOfferRef = useRef<any>(null);
+  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const activeCallRef = useRef<ActiveCallSession | null>(null);
+
+  useEffect(() => {
+    activeCallRef.current = activeCall;
+  }, [activeCall]);
 
   const clearCallError = () => setCallError(null);
 
-  // Initialize Remote Audio Element
+  // Initialize Remote Audio Element with off-screen positioning (avoiding display:none background throttling)
   useEffect(() => {
     const audio = document.createElement('audio');
     audio.autoplay = true;
     audio.setAttribute('playsinline', 'true');
+    audio.style.position = 'fixed';
+    audio.style.left = '-9999px';
+    audio.style.top = '-9999px';
+    audio.style.width = '1px';
+    audio.style.height = '1px';
+    audio.style.opacity = '0';
+    document.body.appendChild(audio);
     remoteAudioRef.current = audio;
 
     return () => {
@@ -54,50 +74,96 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, []);
 
-  // WebSocket Signaling Connection
+  // Poll genuine audio level from WebRTC AnalyserNode while call is connected
   useEffect(() => {
-    if (!isAuthenticated || !token) {
-      if (socketRef.current) {
-        socketRef.current.close();
-        socketRef.current = null;
+    if (activeCall?.state === 'connected') {
+      audioMeterIntervalRef.current = setInterval(() => {
+        if (webrtcRef.current) {
+          setAudioLevel(webrtcRef.current.getAudioLevel());
+        }
+      }, 100);
+    } else {
+      if (audioMeterIntervalRef.current) {
+        clearInterval(audioMeterIntervalRef.current);
+        audioMeterIntervalRef.current = null;
       }
-      setSignalingStatus('disconnected');
-      setOnlineUserIds(new Set());
-      return;
+      setAudioLevel(0);
     }
 
-    setSignalingStatus('connecting');
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws/signaling?token=${encodeURIComponent(token)}`;
-    const ws = new WebSocket(wsUrl);
-    socketRef.current = ws;
-
-    ws.onopen = () => {
-      setSignalingStatus('connected');
-    };
-
-    ws.onmessage = async (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        handleIncomingSignalingMessage(msg);
-      } catch (e) {
-        console.error('Error parsing signaling message:', e);
+    return () => {
+      if (audioMeterIntervalRef.current) {
+        clearInterval(audioMeterIntervalRef.current);
+        audioMeterIntervalRef.current = null;
       }
     };
+  }, [activeCall?.state]);
 
-    ws.onerror = () => {
-      setSignalingStatus('disconnected');
-    };
+  const unlockAudioPlayback = useCallback(() => {
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.play().then(() => {
+        setIsAudioPlaybackBlocked(false);
+      }).catch((e) => {
+        console.warn('Manual audio play retry failed:', e);
+      });
+    }
+  }, []);
 
-    ws.onclose = () => {
-      setSignalingStatus('disconnected');
-    };
+  const startDurationTimer = useCallback(() => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = setInterval(() => {
+      setActiveCall((prev) => {
+        if (!prev || prev.state !== 'connected') return prev;
+        const updated = { ...prev, durationSeconds: prev.durationSeconds + 1 };
+        activeCallRef.current = updated;
+        return updated;
+      });
+    }, 1000);
+  }, []);
 
-    return () => {
-      ws.close();
-      socketRef.current = null;
-    };
-  }, [isAuthenticated, token]);
+  const stopDurationTimer = useCallback(() => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  const cleanUpCallState = useCallback((finalState: CallState = 'ended') => {
+    stopDurationTimer();
+    if (ringTimeoutRef.current) {
+      clearTimeout(ringTimeoutRef.current);
+      ringTimeoutRef.current = null;
+    }
+    if (audioMeterIntervalRef.current) {
+      clearInterval(audioMeterIntervalRef.current);
+      audioMeterIntervalRef.current = null;
+    }
+    setAudioLevel(0);
+    setIsAudioPlaybackBlocked(false);
+
+    if (webrtcRef.current) {
+      webrtcRef.current.close();
+      webrtcRef.current = null;
+    }
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.srcObject = null;
+    }
+    pendingOfferRef.current = null;
+    pendingCandidatesRef.current = [];
+    setActiveCall((prev) => {
+      const next = prev ? { ...prev, state: finalState } : null;
+      activeCallRef.current = next;
+      return next;
+    });
+    setTimeout(() => {
+      setActiveCall((prev) => {
+        if (prev && (prev.state === 'ended' || prev.state === 'rejected' || prev.state === 'failed')) {
+          activeCallRef.current = null;
+          return null;
+        }
+        return prev;
+      });
+    }, 2500);
+  }, [stopDurationTimer]);
 
   // Handle incoming WebSocket messages
   const handleIncomingSignalingMessage = useCallback(async (msg: any) => {
@@ -122,24 +188,37 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       case 'incoming_call':
         pendingOfferRef.current = msg;
-        setActiveCall({
-          callId: msg.call_id,
-          peerId: msg.caller_id,
-          peerName: msg.caller_name || 'Caller',
-          isCaller: false,
-          state: 'incoming',
-          durationSeconds: 0,
-          isMuted: false,
-          localStream: null,
-          remoteStream: null,
-        });
+        pendingCandidatesRef.current = [];
+        {
+          const incomingSession: ActiveCallSession = {
+            callId: msg.call_id,
+            peerId: msg.caller_id,
+            peerName: msg.caller_name || 'Caller',
+            isCaller: false,
+            state: 'incoming',
+            durationSeconds: 0,
+            isMuted: false,
+            localStream: null,
+            remoteStream: null,
+          };
+          activeCallRef.current = incomingSession;
+          setActiveCall(incomingSession);
+        }
         break;
 
       case 'call_accepted':
+        if (ringTimeoutRef.current) {
+          clearTimeout(ringTimeoutRef.current);
+          ringTimeoutRef.current = null;
+        }
         if (webrtcRef.current && msg.sdp) {
           try {
             await webrtcRef.current.handleAnswer(msg.sdp);
-            setActiveCall((prev) => (prev ? { ...prev, state: 'connected' } : null));
+            setActiveCall((prev) => {
+              const next = prev ? { ...prev, state: 'connected' as CallState } : null;
+              activeCallRef.current = next;
+              return next;
+            });
             startDurationTimer();
           } catch (e: any) {
             setCallError(`Failed to establish connection: ${e.message}`);
@@ -148,8 +227,13 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         break;
 
       case 'ice_candidate':
-        if (webrtcRef.current && msg.candidate) {
-          await webrtcRef.current.addIceCandidate(msg.candidate);
+        if (msg.candidate) {
+          if (webrtcRef.current) {
+            await webrtcRef.current.addIceCandidate(msg.candidate);
+          } else {
+            // Buffer ICE candidates that arrive while the callee's IncomingCallModal is still ringing
+            pendingCandidatesRef.current.push(msg.candidate);
+          }
         }
         break;
 
@@ -171,50 +255,144 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       case 'call_ended':
         cleanUpCallState('ended');
         break;
-    }
-  }, []);
 
-  const startDurationTimer = () => {
-    if (timerRef.current) clearInterval(timerRef.current);
-    timerRef.current = setInterval(() => {
-      setActiveCall((prev) => {
-        if (!prev || prev.state !== 'connected') return prev;
-        return { ...prev, durationSeconds: prev.durationSeconds + 1 };
+      case 'pstn_call_status':
+      case 'incoming_pstn_call':
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('onground_pstn_event', { detail: msg }));
+        }
+        break;
+    }
+  }, [cleanUpCallState, startDurationTimer]);
+
+  // WebSocket Signaling Connection with automatic reconnect
+  useEffect(() => {
+    if (!isAuthenticated || !token) {
+      if (socketRef.current) {
+        socketRef.current.close();
+        socketRef.current = null;
+      }
+      setSignalingStatus('disconnected');
+      setOnlineUserIds(new Set());
+      return;
+    }
+
+    let isMounted = true;
+    let reconnectTimeout: any = null;
+
+    const connectWs = () => {
+      if (!isMounted) return;
+      setSignalingStatus('connecting');
+      let wsUrl: string;
+      const customWs = (import.meta.env.VITE_WS_URL || '').trim();
+      const customApi = (import.meta.env.VITE_API_URL || '').trim();
+
+      if (customWs) {
+        const base = customWs.endsWith('/ws/signaling') ? customWs : `${customWs.replace(/\/+$/, '')}/ws/signaling`;
+        const sep = base.includes('?') ? '&' : '?';
+        wsUrl = `${base}${sep}token=${encodeURIComponent(token)}`;
+      } else if (customApi) {
+        const cleanApi = customApi.replace(/\/api\/?$/, '').replace(/\/+$/, '');
+        const wsScheme = cleanApi.startsWith('https://') ? 'wss://' : 'ws://';
+        const hostPath = cleanApi.replace(/^https?:\/\//, '');
+        wsUrl = `${wsScheme}${hostPath}/ws/signaling?token=${encodeURIComponent(token)}`;
+      } else {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsUrl = `${protocol}//${window.location.host}/ws/signaling?token=${encodeURIComponent(token)}`;
+      }
+
+      const ws = new WebSocket(wsUrl);
+      socketRef.current = ws;
+
+      ws.onopen = () => {
+        if (!isMounted) return;
+        setSignalingStatus('connected');
+      };
+
+      ws.onmessage = async (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          handleIncomingSignalingMessage(msg);
+        } catch (e) {
+          console.error('Error parsing signaling message:', e);
+        }
+      };
+
+      ws.onerror = () => {
+        if (!isMounted) return;
+        setSignalingStatus('disconnected');
+      };
+
+      ws.onclose = () => {
+        if (!isMounted) return;
+        setSignalingStatus('disconnected');
+        reconnectTimeout = setTimeout(connectWs, 3000);
+      };
+    };
+
+    connectWs();
+
+    return () => {
+      isMounted = false;
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (socketRef.current) {
+        socketRef.current.close();
+        socketRef.current = null;
+      }
+    };
+  }, [isAuthenticated, token, handleIncomingSignalingMessage]);
+
+  const endCall = useCallback(async () => {
+    const current = activeCallRef.current;
+    if (!current) return;
+
+    const currentDuration = current.durationSeconds;
+    const callId = current.callId;
+    const peerId = current.peerId;
+    const wasConnected = current.state === 'connected' || currentDuration > 0;
+
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(
+        JSON.stringify({
+          type: 'call_end',
+          target_id: peerId,
+          call_id: callId,
+          reason: 'Call ended by participant',
+        })
+      );
+    }
+
+    cleanUpCallState('ended');
+
+    try {
+      await api.updateCall(callId, {
+        status: wasConnected ? 'completed' : 'missed',
+        duration_seconds: currentDuration,
       });
-    }, 1000);
-  };
-
-  const stopDurationTimer = () => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
+    } catch (e) {
+      console.warn('Error updating call end status:', e);
     }
-  };
-
-  const cleanUpCallState = (finalState: CallState = 'ended') => {
-    stopDurationTimer();
-    if (webrtcRef.current) {
-      webrtcRef.current.close();
-      webrtcRef.current = null;
-    }
-    if (remoteAudioRef.current) {
-      remoteAudioRef.current.srcObject = null;
-    }
-    pendingOfferRef.current = null;
-    setActiveCall((prev) => (prev ? { ...prev, state: finalState } : null));
-    setTimeout(() => {
-      setActiveCall(null);
-    }, 2500);
-  };
+  }, [cleanUpCallState]);
 
   const initWebRTC = (peerId: string, callId: string): WebRTCManager => {
     const rtc = new WebRTCManager({
       onRemoteStream: (stream) => {
         if (remoteAudioRef.current) {
-          remoteAudioRef.current.srcObject = stream;
-          remoteAudioRef.current.play().catch((e) => console.warn('Audio play auto-policy:', e));
+          if (remoteAudioRef.current.srcObject !== stream) {
+            remoteAudioRef.current.srcObject = stream;
+          }
+          remoteAudioRef.current.play().then(() => {
+            setIsAudioPlaybackBlocked(false);
+          }).catch((e) => {
+            console.warn('Audio play auto-policy:', e);
+            setIsAudioPlaybackBlocked(true);
+          });
         }
-        setActiveCall((prev) => (prev ? { ...prev, remoteStream: stream } : null));
+        setActiveCall((prev) => {
+          const next = prev ? { ...prev, remoteStream: stream } : null;
+          activeCallRef.current = next;
+          return next;
+        });
       },
       onIceCandidate: (candidate) => {
         if (socketRef.current?.readyState === WebSocket.OPEN) {
@@ -230,7 +408,11 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       },
       onConnectionStateChange: (state) => {
         if (state === 'connected') {
-          setActiveCall((prev) => (prev ? { ...prev, state: 'connected' } : null));
+          setActiveCall((prev) => {
+            const next = prev ? { ...prev, state: 'connected' as CallState } : null;
+            activeCallRef.current = next;
+            return next;
+          });
         } else if (state === 'disconnected' || state === 'failed') {
           setCallError('WebRTC connection disconnected or failed.');
           endCall();
@@ -248,6 +430,13 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const startCall = async (recipientId: string, recipientName: string) => {
     try {
       setCallError(null);
+      pendingCandidatesRef.current = [];
+
+      // Pre-unlock remote audio playback inside user click gesture
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.play().catch(() => {});
+      }
+
       // 1. Create Call record in DB
       const record = await api.createCall(recipientId, 'audio');
 
@@ -260,7 +449,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const offer = await rtc.createOffer();
 
       // 4. Set active call state
-      setActiveCall({
+      const newCall: ActiveCallSession = {
         callId: record._id,
         peerId: recipientId,
         peerName: recipientName,
@@ -270,7 +459,18 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isMuted: false,
         localStream,
         remoteStream: null,
-      });
+      };
+      activeCallRef.current = newCall;
+      setActiveCall(newCall);
+
+      // Start ringing timeout (45 seconds)
+      if (ringTimeoutRef.current) clearTimeout(ringTimeoutRef.current);
+      ringTimeoutRef.current = setTimeout(() => {
+        if (activeCallRef.current?.state === 'calling') {
+          setCallError('Recipient did not answer the call within 45 seconds.');
+          endCall();
+        }
+      }, 45000);
 
       // 5. Send offer via WebSocket
       if (socketRef.current?.readyState === WebSocket.OPEN) {
@@ -298,7 +498,17 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     try {
       setCallError(null);
-      setActiveCall((prev) => (prev ? { ...prev, state: 'connecting' } : null));
+
+      // Pre-unlock remote audio playback inside user click gesture
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.play().catch(() => {});
+      }
+
+      setActiveCall((prev) => {
+        const next = prev ? { ...prev, state: 'connecting' as CallState } : null;
+        activeCallRef.current = next;
+        return next;
+      });
 
       // 1. Initialize WebRTC
       const rtc = initWebRTC(msg.caller_id, msg.call_id);
@@ -308,10 +518,18 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // 2. Create answer from incoming offer
       const answer = await rtc.handleOffer(msg.sdp);
 
-      // 3. Update call record in backend
+      // 3. Drain any ICE candidates that arrived while the incoming call modal was ringing
+      while (pendingCandidatesRef.current.length > 0) {
+        const cand = pendingCandidatesRef.current.shift();
+        if (cand) {
+          await rtc.addIceCandidate(cand);
+        }
+      }
+
+      // 4. Update call record in backend
       await api.updateCall(msg.call_id, { status: 'connected' });
 
-      // 4. Send answer via WebSocket
+      // 5. Send answer via WebSocket
       if (socketRef.current?.readyState === WebSocket.OPEN) {
         socketRef.current.send(
           JSON.stringify({
@@ -323,18 +541,34 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
       }
 
-      setActiveCall((prev) =>
-        prev
+      setActiveCall((prev) => {
+        const next = prev
           ? {
               ...prev,
-              state: 'connected',
+              state: 'connected' as CallState,
               localStream,
             }
-          : null
-      );
+          : null;
+        activeCallRef.current = next;
+        return next;
+      });
       startDurationTimer();
     } catch (err: any) {
       setCallError(err.message || 'Failed to accept call.');
+      // Notify caller so caller's session does not stay ringing indefinitely
+      if (socketRef.current?.readyState === WebSocket.OPEN && msg?.caller_id) {
+        socketRef.current.send(
+          JSON.stringify({
+            type: 'call_reject',
+            target_id: msg.caller_id,
+            call_id: msg.call_id,
+            reason: err.message || 'Recipient could not access microphone or media device.',
+          })
+        );
+      }
+      try {
+        await api.updateCall(msg.call_id, { status: 'failed', notes: err.message });
+      } catch {}
       cleanUpCallState('failed');
     }
   };
@@ -363,40 +597,14 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     cleanUpCallState('rejected');
   };
 
-  const endCall = async () => {
-    if (!activeCall) return;
-
-    const currentDuration = activeCall.durationSeconds;
-    const callId = activeCall.callId;
-    const peerId = activeCall.peerId;
-
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(
-        JSON.stringify({
-          type: 'call_end',
-          target_id: peerId,
-          call_id: callId,
-          reason: 'Call ended by participant',
-        })
-      );
-    }
-
-    try {
-      await api.updateCall(callId, {
-        status: 'ended',
-        duration_seconds: currentDuration,
-      });
-    } catch (e) {
-      console.warn('Error updating call end status:', e);
-    }
-
-    cleanUpCallState('ended');
-  };
-
   const toggleMute = () => {
     if (webrtcRef.current) {
       const isMuted = webrtcRef.current.toggleMute();
-      setActiveCall((prev) => (prev ? { ...prev, isMuted } : null));
+      setActiveCall((prev) => {
+        const next = prev ? { ...prev, isMuted } : null;
+        activeCallRef.current = next;
+        return next;
+      });
     }
   };
 
@@ -413,6 +621,9 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         toggleMute,
         callError,
         clearCallError,
+        audioLevel,
+        isAudioPlaybackBlocked,
+        unlockAudioPlayback,
       }}
     >
       {children}

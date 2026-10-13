@@ -39,6 +39,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     initializeAuth();
+
+    const handleUnauthorized = () => {
+      api.setToken(null);
+      setToken(null);
+      setUser(null);
+    };
+
+    window.addEventListener('onground_unauthorized', handleUnauthorized);
+    return () => {
+      window.removeEventListener('onground_unauthorized', handleUnauthorized);
+    };
   }, []);
 
   const login = async (email: string, password: string) => {

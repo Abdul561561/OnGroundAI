@@ -12,7 +12,16 @@ import {
 } from 'lucide-react';
 
 export const ActiveCallModal: React.FC = () => {
-  const { activeCall, endCall, toggleMute, callError, clearCallError } = useCall();
+  const {
+    activeCall,
+    endCall,
+    toggleMute,
+    callError,
+    clearCallError,
+    audioLevel,
+    isAudioPlaybackBlocked,
+    unlockAudioPlayback,
+  } = useCall();
 
   if (!activeCall || activeCall.state === 'incoming') return null;
 
@@ -42,13 +51,36 @@ export const ActiveCallModal: React.FC = () => {
       <div className="bg-slate-900 border border-slate-700 rounded-3xl w-full max-w-md p-6 sm:p-8 text-center shadow-2xl relative space-y-6">
         {/* Error Notification */}
         {callError && (
-          <div className="p-3 bg-rose-500/15 border border-rose-500/30 rounded-xl flex items-center justify-between text-xs text-rose-300 text-left">
-            <div className="flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-              <span>{callError}</span>
+          <div className="p-3 bg-rose-500/15 border border-rose-500/30 rounded-xl space-y-1 text-xs text-rose-300 text-left">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span className="font-semibold">{callError}</span>
+              </div>
+              <button onClick={clearCallError} className="text-rose-400 hover:underline ml-2 text-[11px]">
+                Dismiss
+              </button>
             </div>
-            <button onClick={clearCallError} className="text-rose-400 hover:underline ml-2">
-              Dismiss
+            {callError.toLowerCase().includes('microphone') && (
+              <p className="text-[11px] text-rose-200/80 pl-6">
+                Please click the tune / lock icon next to the URL in your browser bar and set Microphone to <strong>Allow</strong>.
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Autoplay Policy Unblock Banner */}
+        {isAudioPlaybackBlocked && (
+          <div className="p-3 bg-amber-500/20 border border-amber-500/40 rounded-2xl flex items-center justify-between text-xs text-amber-200 animate-pulse">
+            <div className="flex items-center gap-2">
+              <Volume2 className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>Browser paused remote audio output.</span>
+            </div>
+            <button
+              onClick={unlockAudioPlayback}
+              className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-3 py-1 rounded-xl text-[11px] transition-all cursor-pointer shadow-md"
+            >
+              Enable Audio
             </button>
           </div>
         )}
@@ -96,24 +128,44 @@ export const ActiveCallModal: React.FC = () => {
           )}
         </div>
 
-        {/* Live Audio Waves Simulation */}
+        {/* Real-Time Audio Level Meter (Driven by Web Audio API AnalyserNode) */}
         {activeCall.state === 'connected' && (
-          <div className="flex items-center justify-center gap-1.5 py-2">
-            {[40, 75, 55, 90, 60, 80, 45, 95, 50, 70].map((h, i) => (
-              <span
-                key={i}
-                className="w-1 bg-cyan-400 rounded-full animate-pulse"
-                style={{
-                  height: `${activeCall.isMuted ? 8 : (h * 0.35)}px`,
-                  animationDuration: `${0.4 + (i % 3) * 0.2}s`,
-                }}
-              />
-            ))}
+          <div className="space-y-1.5 py-1">
+            <div className="flex items-center justify-center gap-1.5 h-8">
+              {[0.4, 0.7, 1.0, 1.3, 1.1, 0.8, 0.5, 0.3].map((mult, idx) => {
+                const height = activeCall.isMuted
+                  ? 4
+                  : Math.max(4, Math.min(30, Math.round((audioLevel * mult * 0.4))));
+                return (
+                  <span
+                    key={idx}
+                    className={`w-1.5 rounded-full transition-all duration-75 ${
+                      activeCall.isMuted
+                        ? 'bg-slate-600'
+                        : audioLevel > 15
+                        ? 'bg-emerald-400 shadow-sm shadow-emerald-400/50'
+                        : 'bg-cyan-500/60'
+                    }`}
+                    style={{ height: `${height}px` }}
+                  />
+                );
+              })}
+            </div>
+            <p className="text-[10px] text-slate-400 flex items-center justify-center gap-1 font-mono">
+              <Radio className={`w-3 h-3 ${audioLevel > 10 ? 'text-emerald-400 animate-pulse' : 'text-slate-500'}`} />
+              <span>
+                {activeCall.isMuted
+                  ? 'Microphone Muted'
+                  : audioLevel > 10
+                  ? `Live Audio Level: ${audioLevel}%`
+                  : 'Microphone Active (Encrypted Stream)'}
+              </span>
+            </p>
           </div>
         )}
 
         {/* Controls */}
-        <div className="flex items-center justify-center gap-5 pt-4">
+        <div className="flex items-center justify-center gap-5 pt-2">
           {/* Mute Button */}
           {activeCall.state === 'connected' && (
             <button
@@ -132,7 +184,7 @@ export const ActiveCallModal: React.FC = () => {
           {/* End Call Button */}
           <button
             onClick={endCall}
-            className="flex items-center gap-2 bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs px-6 py-3.5 rounded-2xl transition-all shadow-lg shadow-rose-600/30"
+            className="flex items-center gap-2 bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs px-6 py-3.5 rounded-2xl transition-all shadow-lg shadow-rose-600/30 cursor-pointer"
           >
             <PhoneOff className="w-5 h-5" />
             <span>End Call</span>

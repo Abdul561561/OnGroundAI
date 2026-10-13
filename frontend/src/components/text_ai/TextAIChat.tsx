@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../../services/api';
-import { Conversation, Message, AIModel } from '../../types';
+import { Conversation, Message, AIModel, Contact } from '../../types';
 import {
   Send,
   Plus,
@@ -11,6 +11,8 @@ import {
   AlertCircle,
   RefreshCw,
   Cpu,
+  Briefcase,
+  CheckCircle2,
 } from 'lucide-react';
 
 export const TextAIChat: React.FC = () => {
@@ -25,13 +27,18 @@ export const TextAIChat: React.FC = () => {
 
   const [models, setModels] = useState<AIModel[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>('openrouter/auto');
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
+  const [savedNotice, setSavedNotice] = useState<string | null>(null);
+  const [isSavingCase, setIsSavingCase] = useState<boolean>(false);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  // Load conversations and models
+  // Load conversations, models, and CRM contacts
   useEffect(() => {
     loadConversations();
     loadModels();
+    api.getContacts().then(setContacts).catch(() => {});
   }, []);
 
   const loadModels = async () => {
@@ -88,6 +95,40 @@ export const TextAIChat: React.FC = () => {
     }
   };
 
+  const handleCreateCaseFromChat = async () => {
+    if (messages.length === 0) return;
+    setIsSavingCase(true);
+    setError(null);
+    setSavedNotice(null);
+    try {
+      const lastUser = [...messages].reverse().find((m) => m.role === 'user')?.content || 'Customer Support Inquiry';
+      const lastAi = [...messages].reverse().find((m) => m.role === 'assistant')?.content || '';
+      const created = await api.createCase({
+        title: `CRM Chat: ${lastUser.slice(0, 60)}`,
+        description: `Customer Inquiry: ${lastUser}\n\nAI Resolution: ${lastAi}`,
+        customer_id: selectedContact?._id,
+        customer_name: selectedContact?.name || 'General Inquiry',
+        customer_phone: selectedContact?.phone_number || '',
+        priority: 'medium',
+      });
+      if (selectedContact) {
+        await api.updateContact(selectedContact._id, {
+          status: 'in_progress',
+          notes: selectedContact.notes
+            ? `${selectedContact.notes}\n[CRM AI Chat Case #${created._id.slice(-6)}]: ${lastUser}`
+            : `[CRM AI Chat Case #${created._id.slice(-6)}]: ${lastUser}`,
+        });
+      }
+      setSavedNotice(
+        `Support Case #${created._id.slice(-6).toUpperCase()} saved to MongoDB${selectedContact ? ` and linked to ${selectedContact.name}` : ''}.`
+      );
+    } catch (err: any) {
+      setError(err.message || 'Failed to create support case.');
+    } finally {
+      setIsSavingCase(false);
+    }
+  };
+
   const handleSendMessage = async (textToSend?: string) => {
     const text = textToSend || inputMessage.trim();
     if (!text || loading) return;
@@ -112,7 +153,8 @@ export const TextAIChat: React.FC = () => {
         text,
         activeConversationId || undefined,
         'text_ai',
-        selectedModel
+        selectedModel,
+        selectedContact?._id
       );
 
       // If new conversation, set active ID and refresh list
@@ -148,7 +190,7 @@ export const TextAIChat: React.FC = () => {
         <div className="p-4 border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Bot className="w-5 h-5 text-blue-400" />
-            <h2 className="font-bold text-white text-sm">Text Intelligence</h2>
+            <h2 className="font-bold text-white text-sm">CRM Grounded Chat</h2>
           </div>
           <button
             onClick={startNewConversation}
@@ -159,27 +201,69 @@ export const TextAIChat: React.FC = () => {
           </button>
         </div>
 
-        {/* Model Selector */}
-        <div className="p-3 border-b border-slate-800 bg-slate-900/90">
-          <label className="text-[11px] font-semibold text-slate-400 flex items-center gap-1.5 mb-1.5">
-            <Cpu className="w-3.5 h-3.5 text-blue-400" />
-            <span>OpenRouter Intelligence Model</span>
-          </label>
-          <select
-            value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
-            className="w-full bg-slate-800 border border-slate-700 text-xs text-slate-200 rounded-lg p-2 focus:outline-none focus:border-blue-500 cursor-pointer"
-          >
-            {models.length > 0 ? (
-              models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name || m.id}
+        {/* CRM Customer Grounding & Model Selector */}
+        <div className="p-3 border-b border-slate-800 bg-slate-900/90 space-y-2.5">
+          <div>
+            <label className="text-[11px] font-semibold text-slate-400 flex items-center gap-1.5 mb-1">
+              <UserIcon className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Ground in Customer CRM Record</span>
+            </label>
+            <select
+              value={selectedContact?._id || ''}
+              onChange={(e) => {
+                const found = contacts.find((c) => c._id === e.target.value) || null;
+                setSelectedContact(found);
+              }}
+              className="w-full bg-slate-800 border border-slate-700 text-xs text-slate-200 rounded-lg p-2 focus:outline-none focus:border-blue-500 cursor-pointer"
+            >
+              <option value="">General Support (No Customer Linked)</option>
+              {contacts.map((c) => (
+                <option key={c._id} value={c._id}>
+                  {c.name} ({c.phone_number})
                 </option>
-              ))
-            ) : (
-              <option value="openrouter/auto">Auto Free Routing (Recommended)</option>
-            )}
-          </select>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-[11px] font-semibold text-slate-400 flex items-center gap-1.5 mb-1">
+              <Cpu className="w-3.5 h-3.5 text-blue-400" />
+              <span>OpenRouter Intelligence Model</span>
+            </label>
+            <select
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              className="w-full bg-slate-800 border border-slate-700 text-xs text-slate-200 rounded-lg p-2 focus:outline-none focus:border-blue-500 cursor-pointer"
+            >
+              {models.length > 0 ? (
+                models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name || m.id}
+                  </option>
+                ))
+              ) : (
+                <option value="openrouter/auto">Auto Free Routing (Recommended)</option>
+              )}
+            </select>
+          </div>
+
+          {messages.length > 0 && (
+            <button
+              onClick={handleCreateCaseFromChat}
+              disabled={isSavingCase}
+              className="w-full py-1.5 px-3 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all"
+            >
+              <Briefcase className="w-3.5 h-3.5" />
+              <span>{isSavingCase ? 'Saving Case...' : 'Log Support Case from Chat'}</span>
+            </button>
+          )}
+
+          {savedNotice && (
+            <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-[11px] text-emerald-300 flex items-center gap-1.5">
+              <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-400" />
+              <span>{savedNotice}</span>
+            </div>
+          )}
         </div>
 
         {/* Conversations List */}

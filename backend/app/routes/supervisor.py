@@ -13,6 +13,10 @@ from app.services.signaling_service import manager
 
 router = APIRouter(tags=["Supervisor & Operations"])
 
+from app.routes.contacts import normalize_phone_number, deduplicate_contact_docs
+
+STAFF_EXCLUDE_TEST_REGEX = r"^(test\.(agent|sup)\.|staff\.(verifier|demo)\.)"
+
 class AssignRequest(BaseModel):
     item_type: str  # "contact" or "follow_up"
     item_id: str
@@ -20,36 +24,46 @@ class AssignRequest(BaseModel):
 
 @router.get("/api/supervisor/agents")
 async def list_agent_workforce(
-    current_user: Dict[str, Any] = Depends(require_supervisor_or_admin)
+    current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """List all agents with live presence, assigned workload, and call counts."""
+    """List all staff agents with live WebSocket presence, assigned workload, and call counts."""
     db = get_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database service unavailable.")
 
-    agents_cursor = db.users.find({}, {"password_hash": 0}).sort("name", 1)
+    staff_filter = {"email": {"$not": {"$regex": STAFF_EXCLUDE_TEST_REGEX, "$options": "i"}}}
+    agents_cursor = db.users.find(staff_filter, {"password_hash": 0}).sort("name", 1)
     agents = await agents_cursor.to_list(length=100)
 
     online_user_ids = set(manager.get_online_user_ids())
 
+    # Deduplicate contacts first so assigned_contacts reflects unique customers
+    all_contacts_raw = await db.contacts.find({}).to_list(length=500)
+    unique_contacts = deduplicate_contact_docs(all_contacts_raw)
+    contact_map: Dict[str, int] = {}
+    for c in unique_contacts:
+        aid = c.get("assigned_agent_id")
+        if aid:
+            contact_map[aid] = contact_map.get(aid, 0) + 1
+
+    followup_counts = await db.follow_ups.aggregate([
+        {"$match": {"status": "pending", "assigned_agent_id": {"$ne": None}}},
+        {"$group": {"_id": "$assigned_agent_id", "count": {"$sum": 1}}}
+    ]).to_list(length=100)
+    followup_map = {f["_id"]: f["count"] for f in followup_counts if f.get("_id")}
+
+    calls_counts = await db.calls.aggregate([
+        {"$match": {"caller_user_id": {"$ne": None}}},
+        {"$group": {"_id": "$caller_user_id", "count": {"$sum": 1}}}
+    ]).to_list(length=100)
+    call_map = {c["_id"]: c["count"] for c in calls_counts if c.get("_id")}
+
     workforce = []
     for a in agents:
         agent_id = a["_id"]
-        # Count assigned contacts
-        assigned_contacts = await db.contacts.count_documents({"assigned_agent_id": agent_id})
-        # Count pending follow-ups
-        pending_follow_ups = await db.follow_ups.count_documents({
-            "assigned_agent_id": agent_id,
-            "status": "pending"
-        })
-        # Count calls handled
-        calls_handled = await db.calls.count_documents({
-            "$or": [{"caller_user_id": agent_id}, {"agent_id": agent_id}]
-        })
-
-        # Presence check: if connected via WebSocket, consider 'available' unless set otherwise
         is_online = agent_id in online_user_ids
-        presence = a.get("presence", "available" if is_online else "offline")
+        db_status = a.get("status", "available")
+        presence = db_status if is_online else "offline"
 
         workforce.append({
             "id": agent_id,
@@ -58,27 +72,28 @@ async def list_agent_workforce(
             "role": a.get("role", "agent"),
             "is_online": is_online,
             "presence": presence,
-            "assigned_contacts": assigned_contacts,
-            "pending_follow_ups": pending_follow_ups,
-            "calls_handled": calls_handled
+            "assigned_contacts": contact_map.get(agent_id, 0),
+            "pending_follow_ups": followup_map.get(agent_id, 0),
+            "calls_handled": call_map.get(agent_id, 0)
         })
 
     return workforce
 
 @router.get("/api/supervisor/queues")
 async def get_supervisor_queues(
-    current_user: Dict[str, Any] = Depends(require_supervisor_or_admin)
+    current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """View active queues: unassigned contacts, pending follow-ups, and recent calls."""
     db = get_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database service unavailable.")
 
-    # Unassigned contacts
+    # Unassigned contacts (deduplicated by normalized phone number)
     unassigned_contacts_cursor = db.contacts.find({
         "$or": [{"assigned_agent_id": None}, {"assigned_agent_id": ""}]
-    }).sort("created_at", -1).limit(50)
-    unassigned_contacts = await unassigned_contacts_cursor.to_list(length=50)
+    }).sort("created_at", -1).limit(200)
+    unassigned_raw = await unassigned_contacts_cursor.to_list(length=200)
+    unassigned_contacts = deduplicate_contact_docs(unassigned_raw)[:50]
 
     # Pending follow-ups
     pending_follow_ups_cursor = db.follow_ups.find({"status": "pending"}).sort("due_at", 1).limit(50)
@@ -114,16 +129,30 @@ async def reassign_item(
         raise HTTPException(status_code=404, detail="Target agent not found.")
 
     if req.item_type == "contact":
-        res = await db.contacts.update_one(
-            {"_id": req.item_id},
-            {"$set": {
-                "assigned_agent_id": req.target_agent_id,
-                "assigned_agent_name": agent["name"],
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            }}
-        )
-        if res.matched_count == 0:
+        contact = await db.contacts.find_one({"_id": req.item_id})
+        if not contact:
             raise HTTPException(status_code=404, detail="Contact not found.")
+        norm_phone = normalize_phone_number(contact.get("phone_number", ""))
+        now_iso = datetime.now(timezone.utc).isoformat()
+        # Update all sibling documents sharing the same phone number so deduplicated view stays consistent
+        if norm_phone:
+            await db.contacts.update_many(
+                {"phone_number": norm_phone},
+                {"$set": {
+                    "assigned_agent_id": req.target_agent_id,
+                    "assigned_agent_name": agent["name"],
+                    "updated_at": now_iso
+                }}
+            )
+        else:
+            await db.contacts.update_one(
+                {"_id": req.item_id},
+                {"$set": {
+                    "assigned_agent_id": req.target_agent_id,
+                    "assigned_agent_name": agent["name"],
+                    "updated_at": now_iso
+                }}
+            )
         return {"status": "success", "message": f"Contact assigned to {agent['name']}."}
 
     elif req.item_type == "follow_up":
@@ -142,20 +171,31 @@ async def reassign_item(
 
 @router.get("/api/supervisor/metrics")
 async def get_call_centre_metrics(
-    current_user: Dict[str, Any] = Depends(require_supervisor_or_admin)
+    current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """Aggregate analytics on call volume, durations, and outcomes."""
     db = get_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database service unavailable.")
 
+    completed_query = {
+        "$or": [
+            {"status": "completed"},
+            {"status": "ended", "duration_seconds": {"$gt": 0}}
+        ]
+    }
     total_calls = await db.calls.count_documents({})
-    completed_calls = await db.calls.count_documents({"status": "completed"})
-    missed_calls = await db.calls.count_documents({"status": {"$in": ["missed", "rejected", "no_answer", "failed"]}})
+    completed_calls = await db.calls.count_documents(completed_query)
+    missed_calls = await db.calls.count_documents({
+        "$or": [
+            {"status": {"$in": ["missed", "rejected", "no_answer", "failed", "busy", "canceled"]}},
+            {"status": "ended", "duration_seconds": {"$in": [0, None]}}
+        ]
+    })
 
     # Calculate average duration of completed calls
     pipeline = [
-        {"$match": {"status": "completed", "duration_seconds": {"$gt": 0}}},
+        {"$match": {"status": {"$in": ["completed", "ended"]}, "duration_seconds": {"$gt": 0}}},
         {"$group": {"_id": None, "avg_duration": {"$avg": "$duration_seconds"}}}
     ]
     avg_duration_res = await db.calls.aggregate(pipeline).to_list(length=1)
@@ -174,7 +214,7 @@ async def get_call_centre_metrics(
         "completed_calls": completed_calls,
         "missed_calls": missed_calls,
         "average_handle_seconds": avg_duration,
-        "answer_rate_pct": round((completed_calls / total_calls * 100), 1) if total_calls > 0 else 100.0,
+        "answer_rate_pct": round((completed_calls / total_calls * 100), 1) if total_calls > 0 else 0.0,
         "outcomes": outcomes_breakdown
     }
 

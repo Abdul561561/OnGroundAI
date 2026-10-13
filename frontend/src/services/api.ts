@@ -12,9 +12,16 @@ import {
   AgentAssistResponse,
   SupervisorAgent,
   SupervisorMetrics,
+  KnowledgeBaseArticle,
+  QueueTicket,
+  SupportCase,
+  AnalyticsOverview,
 } from '../types';
 
-const API_BASE = '/api';
+const rawApiUrl = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
+export const API_BASE = rawApiUrl
+  ? (rawApiUrl.endsWith('/api') ? rawApiUrl : `${rawApiUrl}/api`)
+  : '/api';
 
 class ApiClient {
   private token: string | null = null;
@@ -46,33 +53,54 @@ class ApiClient {
       headers['Authorization'] = `Bearer ${this.token}`;
     }
 
-    const response = await fetch(`${API_BASE}${endpoint}`, {
-      ...options,
-      headers,
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    const signal = options.signal || controller.signal;
 
-    if (!response.ok) {
-      let errorMessage = `Request failed (${response.status})`;
-      try {
-        const errorData = await response.json();
-        if (errorData.detail) {
-          if (typeof errorData.detail === 'string') {
-            errorMessage = errorData.detail;
-          } else if (typeof errorData.detail === 'object' && errorData.detail.message) {
-            errorMessage = errorData.detail.message;
-          } else {
-            errorMessage = JSON.stringify(errorData.detail);
+    try {
+      const response = await fetch(`${API_BASE}${endpoint}`, {
+        ...options,
+        headers,
+        signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        if (response.status === 401 && endpoint !== '/auth/login' && endpoint !== '/auth/register') {
+          this.setToken(null);
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('onground_unauthorized'));
           }
-        } else if (errorData.message) {
-          errorMessage = errorData.message;
         }
-      } catch {
-        // fallback
-      }
-      throw new Error(errorMessage);
-    }
 
-    return response.json();
+        let errorMessage = `Request failed (${response.status})`;
+        try {
+          const errorData = await response.json();
+          if (errorData.detail) {
+            if (typeof errorData.detail === 'string') {
+              errorMessage = errorData.detail;
+            } else if (typeof errorData.detail === 'object' && errorData.detail.message) {
+              errorMessage = errorData.detail.message;
+            } else {
+              errorMessage = JSON.stringify(errorData.detail);
+            }
+          } else if (errorData.message) {
+            errorMessage = errorData.message;
+          }
+        } catch {
+          // fallback
+        }
+        throw new Error(errorMessage);
+      }
+
+      return response.json();
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError') {
+        throw new Error('Request timed out. The server or database took too long to respond.');
+      }
+      throw err;
+    }
   }
 
   // Auth Endpoints
@@ -143,6 +171,7 @@ class ApiClient {
     contact: any;
     calls: CallRecord[];
     follow_ups: FollowUp[];
+    cases?: SupportCase[];
   }> {
     return this.request(`/contacts/${contactId}/history`);
   }
@@ -172,25 +201,42 @@ class ApiClient {
     return this.request<TelephonyStatus>('/telephony/status');
   }
 
-  async getSoftphoneToken(): Promise<{ token: string | null; carrier_configured: boolean; message?: string }> {
+  async getSoftphoneToken(): Promise<{
+    token: string | null;
+    carrier_configured: boolean;
+    browser_audio_ready?: boolean;
+    identity?: string;
+    phone_number?: string;
+    message?: string;
+  }> {
     return this.request('/telephony/token');
   }
 
-  async initiateOutboundPhoneCall(phoneNumber: string, contactId?: string, notes?: string): Promise<CallRecord> {
+  async initiateOutboundPhoneCall(
+    phoneNumber: string,
+    contactId?: string,
+    notes?: string,
+    browserSdk: boolean = false
+  ): Promise<CallRecord> {
     return this.request<CallRecord>('/telephony/outbound', {
       method: 'POST',
       body: JSON.stringify({
         phone_number: phoneNumber,
         contact_id: contactId,
         notes,
+        browser_sdk: browserSdk,
       }),
     });
   }
 
-  async hangupPhoneCall(callSid: string): Promise<any> {
+  async hangupPhoneCall(callSid?: string, callId?: string, durationSeconds?: number): Promise<any> {
     return this.request('/telephony/hangup', {
       method: 'POST',
-      body: JSON.stringify({ call_sid: callSid }),
+      body: JSON.stringify({
+        call_sid: callSid,
+        call_id: callId,
+        duration_seconds: durationSeconds,
+      }),
     });
   }
 
@@ -336,6 +382,103 @@ class ApiClient {
     };
   }
 
+  // Knowledge Base Endpoints
+  async getKnowledgeBase(category?: string, search?: string): Promise<KnowledgeBaseArticle[]> {
+    const params = new URLSearchParams();
+    if (category) params.append('category', category);
+    if (search) params.append('search', search);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    return this.request<KnowledgeBaseArticle[]>(`/knowledge-base${qs}`);
+  }
+
+  async createKnowledgeBaseArticle(article: {
+    title: string;
+    category: string;
+    content: string;
+    tags?: string[];
+  }): Promise<KnowledgeBaseArticle> {
+    return this.request<KnowledgeBaseArticle>('/knowledge-base', {
+      method: 'POST',
+      body: JSON.stringify(article),
+    });
+  }
+
+  async deleteKnowledgeBaseArticle(articleId: string): Promise<void> {
+    return this.request(`/knowledge-base/${articleId}`, { method: 'DELETE' });
+  }
+
+  // Incoming Call Queues & AI Escalations Endpoints
+  async getQueues(status?: string, queueType?: string): Promise<QueueTicket[]> {
+    const params = new URLSearchParams();
+    if (status) params.append('status', status);
+    if (queueType) params.append('queue_type', queueType);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    return this.request<QueueTicket[]>(`/queues${qs}`);
+  }
+
+  async escalateAiCallToHuman(data: {
+    customer_name: string;
+    customer_phone?: string;
+    contact_id?: string;
+    reason: string;
+    transcript_summary?: string;
+    full_transcript?: string;
+    priority?: string;
+  }): Promise<QueueTicket> {
+    return this.request<QueueTicket>('/queues/escalate', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async claimQueueTicket(ticketId: string): Promise<QueueTicket> {
+    return this.request<QueueTicket>(`/queues/${ticketId}/claim`, { method: 'POST' });
+  }
+
+  async updateQueueTicket(ticketId: string, updates: Partial<QueueTicket>): Promise<QueueTicket> {
+    return this.request<QueueTicket>(`/queues/${ticketId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    });
+  }
+
+  // Support Cases Endpoints
+  async getCases(status?: string, priority?: string, search?: string): Promise<SupportCase[]> {
+    const params = new URLSearchParams();
+    if (status) params.append('status', status);
+    if (priority) params.append('priority', priority);
+    if (search) params.append('search', search);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    return this.request<SupportCase[]>(`/cases${qs}`);
+  }
+
+  async createCase(data: {
+    title: string;
+    description: string;
+    customer_id?: string;
+    customer_name?: string;
+    customer_phone?: string;
+    priority?: string;
+    assigned_agent_id?: string;
+  }): Promise<SupportCase> {
+    return this.request<SupportCase>('/cases', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateCase(caseId: string, updates: Partial<SupportCase>): Promise<SupportCase> {
+    return this.request<SupportCase>(`/cases/${caseId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    });
+  }
+
+  // Analytics & Operational Reports Endpoints
+  async getAnalyticsOverview(): Promise<AnalyticsOverview> {
+    return this.request<AnalyticsOverview>('/analytics/overview');
+  }
+
   // Health & Limitations
   async getHealth(): Promise<any> {
     return this.request('/health');
@@ -347,3 +490,4 @@ class ApiClient {
 }
 
 export const api = new ApiClient();
+

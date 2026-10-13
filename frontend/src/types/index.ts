@@ -133,6 +133,11 @@ export interface TelephonyStatus {
   phone_number?: string;
   message?: string;
   simulated_calling_disabled: boolean;
+  browser_audio_ready?: boolean;
+  public_webhook_ready?: boolean;
+  credentials_valid?: boolean;
+  account_name?: string;
+  warnings?: string[];
   configuration_guide?: Record<string, string>;
   internal_webrtc_available?: boolean;
 }
@@ -164,3 +169,76 @@ export interface SupervisorMetrics {
   answer_rate_pct: number;
   outcomes: Record<string, number>;
 }
+
+export interface KnowledgeBaseArticle {
+  _id: string;
+  title: string;
+  category: string;
+  content: string;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface QueueTicket {
+  _id: string;
+  customer_name: string;
+  customer_phone?: string;
+  contact_id?: string;
+  queue_type: string;
+  priority: 'low' | 'normal' | 'high' | 'urgent';
+  status: 'waiting' | 'in_progress' | 'claimed' | 'resolved' | 'abandoned';
+  reason?: string;
+  transcript_summary?: string;
+  assigned_agent_id?: string;
+  assigned_agent_name?: string;
+  wait_time_seconds: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SupportCase {
+  _id: string;
+  title: string;
+  description: string;
+  customer_id?: string;
+  customer_name: string;
+  customer_phone?: string;
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  status: 'open' | 'in_progress' | 'pending_customer' | 'resolved' | 'closed';
+  assigned_agent_id?: string;
+  assigned_agent_name?: string;
+  resolution_notes?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AnalyticsOverview {
+  calls: {
+    total_calls: number;
+    completed_calls: number;
+    missed_calls: number;
+    average_handle_duration_seconds: number;
+    answer_rate_pct: number;
+  };
+  modes: {
+    human_to_human_webrtc: number;
+    human_to_ai_voice: number;
+    ai_to_human_escalations: number;
+    outbound_telephony: number;
+    ai_containment_rate_pct: number;
+  };
+  cases: {
+    total_cases: number;
+    resolved_cases: number;
+    open_cases: number;
+    first_contact_resolution_pct: number;
+  };
+  workforce: {
+    total_staff: number;
+    active_on_shift: number;
+    occupancy_rate_pct: number;
+  };
+  call_outcomes: Record<string, number>;
+}
+

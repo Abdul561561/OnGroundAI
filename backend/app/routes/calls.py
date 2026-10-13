@@ -305,12 +305,17 @@ async def generate_call_summary(
     transcript_docs = await cursor.to_list(length=200)
 
     transcript_text = ""
-    if req and req.transcript_text:
-        transcript_text = req.transcript_text
+    if req and req.transcript_text and req.transcript_text.strip():
+        transcript_text = req.transcript_text.strip()
     elif transcript_docs:
-        transcript_text = "\n".join([f"{t['speaker']}: {t['content']}" for t in transcript_docs])
-    else:
-        transcript_text = f"Audio call between {call.get('caller_name', 'Agent')} and {call.get('recipient_name', 'Customer')} lasting {call.get('duration_seconds', 0)} seconds."
+        transcript_text = "\n".join([f"{t['speaker']}: {t['content']}" for t in transcript_docs if t.get('content')])
+
+    if not transcript_text:
+        return {
+            "call_id": call_id,
+            "ai_summary": "No transcript dialogue recorded for this session. Summary cannot be generated.",
+            "transcript_segments_analyzed": 0
+        }
 
     summary = await AIService.generate_call_summary(transcript_text)
 

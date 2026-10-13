@@ -20,6 +20,11 @@ export class WebRTCManager {
   private remoteStream: MediaStream | null = null;
   private callbacks: WebRTCConfig;
   private isMuted: boolean = false;
+  private pendingCandidates: RTCIceCandidateInit[] = [];
+  private audioContext: AudioContext | null = null;
+  private analyser: AnalyserNode | null = null;
+  private audioSource: MediaStreamAudioSourceNode | null = null;
+  private dataArray: Uint8Array | null = null;
 
   constructor(callbacks: WebRTCConfig) {
     this.callbacks = callbacks;
@@ -35,12 +40,49 @@ export class WebRTCManager {
         },
         video: false,
       });
+      this.setupAudioAnalyser(this.localStream);
       return this.localStream;
     } catch (err: any) {
       const msg = err.name === 'NotAllowedError'
         ? 'Microphone permission was denied. Please allow microphone access in your browser.'
         : `Could not access microphone: ${err.message || 'Device error'}`;
       throw new Error(msg);
+    }
+  }
+
+  private setupAudioAnalyser(stream: MediaStream) {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      if (!this.audioContext || this.audioContext.state === 'closed') {
+        this.audioContext = new AudioCtx();
+      }
+      if (this.audioContext.state === 'suspended') {
+        this.audioContext.resume().catch(() => {});
+      }
+      this.analyser = this.audioContext.createAnalyser();
+      this.analyser.fftSize = 64;
+      this.dataArray = new Uint8Array(this.analyser.frequencyBinCount);
+      this.audioSource = this.audioContext.createMediaStreamSource(stream);
+      // Connect to analyser only (NOT to destination to prevent acoustic loopback/echo)
+      this.audioSource.connect(this.analyser);
+    } catch (e) {
+      console.warn('Audio analyser setup:', e);
+    }
+  }
+
+  getAudioLevel(): number {
+    if (this.isMuted || !this.analyser || !this.dataArray) return 0;
+    try {
+      this.analyser.getByteFrequencyData(this.dataArray as any);
+      let sum = 0;
+      for (let i = 0; i < this.dataArray.length; i++) {
+        sum += this.dataArray[i];
+      }
+      const avg = sum / this.dataArray.length;
+      return Math.min(100, Math.round((avg / 255) * 100));
+    } catch {
+      return 0;
     }
   }
 
@@ -108,7 +150,8 @@ export class WebRTCManager {
     if (!this.peerConnection) {
       this.createPeerConnection();
     }
-    await this.peerConnection!.setRemoteDescription(new RTCSessionDescription(offer));
+    await this.peerConnection!.setRemoteDescription({ type: offer.type, sdp: offer.sdp });
+    await this.processPendingCandidates();
     const answer = await this.peerConnection!.createAnswer();
     await this.peerConnection!.setLocalDescription(answer);
     return answer;
@@ -116,15 +159,35 @@ export class WebRTCManager {
 
   async handleAnswer(answer: RTCSessionDescriptionInit): Promise<void> {
     if (!this.peerConnection) return;
-    await this.peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+    await this.peerConnection.setRemoteDescription({ type: answer.type, sdp: answer.sdp });
+    await this.processPendingCandidates();
   }
 
   async addIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
-    if (!this.peerConnection) return;
+    if (!this.peerConnection || !this.peerConnection.remoteDescription) {
+      this.pendingCandidates.push(candidate);
+      return;
+    }
     try {
-      await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+      if (candidate && (candidate.candidate !== undefined)) {
+        await this.peerConnection.addIceCandidate(candidate);
+      }
     } catch (e) {
       console.warn('Error adding ICE candidate:', e);
+    }
+  }
+
+  private async processPendingCandidates(): Promise<void> {
+    if (!this.peerConnection || !this.peerConnection.remoteDescription) return;
+    while (this.pendingCandidates.length > 0) {
+      const candidate = this.pendingCandidates.shift();
+      if (candidate && (candidate.candidate !== undefined)) {
+        try {
+          await this.peerConnection.addIceCandidate(candidate);
+        } catch (e) {
+          console.warn('Error adding queued ICE candidate:', e);
+        }
+      }
     }
   }
 
@@ -146,6 +209,23 @@ export class WebRTCManager {
   }
 
   close() {
+    if (this.audioSource) {
+      try {
+        this.audioSource.disconnect();
+      } catch {}
+      this.audioSource = null;
+    }
+    if (this.analyser) {
+      this.analyser = null;
+    }
+    if (this.audioContext && this.audioContext.state !== 'closed') {
+      try {
+        this.audioContext.close();
+      } catch {}
+      this.audioContext = null;
+    }
+    this.dataArray = null;
+
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => track.stop());
       this.localStream = null;
@@ -158,6 +238,7 @@ export class WebRTCManager {
       this.peerConnection = null;
     }
     this.remoteStream = null;
+    this.pendingCandidates = [];
     this.isMuted = false;
   }
 }

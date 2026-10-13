@@ -36,3 +36,16 @@ def test_call_outcome_enums():
     ]
     for outcome in valid_outcomes:
         assert outcome in valid_outcomes
+
+def test_deduplicate_contact_docs():
+    from app.routes.contacts import deduplicate_contact_docs
+    docs = [
+        {"_id": "c1", "name": "Robert Vance", "phone_number": "+15559482819", "status": "new", "notes": "Latest duplicate"},
+        {"_id": "c2", "name": "Robert Vance", "phone_number": "+15559482819", "status": "in_progress", "notes": "VIP enterprise note"},
+        {"_id": "c3", "name": "Acme Corp - Alex Rivera", "phone_number": "+15554328899", "status": "contacted", "notes": "Interested"}
+    ]
+    deduped = deduplicate_contact_docs(docs)
+    assert len(deduped) == 2
+    robert = next(d for d in deduped if d["phone_number"] == "+15559482819")
+    assert robert["status"] == "in_progress"
+

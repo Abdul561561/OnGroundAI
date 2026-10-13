@@ -105,6 +105,9 @@ export const AgentAssistPanel: React.FC<AgentAssistPanelProps> = ({
     }
   };
 
+  const [savedNotice, setSavedNotice] = useState<string | null>(null);
+  const [isSavingRecord, setIsSavingRecord] = useState(false);
+
   const handleCopyReply = () => {
     if (!assistData) return;
     navigator.clipboard.writeText(assistData.recommended_reply);
@@ -126,6 +129,75 @@ export const AgentAssistPanel: React.FC<AgentAssistPanelProps> = ({
     }
   };
 
+  const handleSaveToCustomerRecord = async () => {
+    if (!assistData) return;
+    if (!selectedContact) {
+      setErrorMsg('Please select a Customer from the dropdown above to save notes to their CRM profile.');
+      return;
+    }
+    setIsSavingRecord(true);
+    setErrorMsg(null);
+    setSavedNotice(null);
+    try {
+      const noteEntry = `[Agent Assist ${new Date().toLocaleDateString()}]: Query: "${customerQuery.trim()}" | AI Guidance: ${assistData.recommended_reply}`;
+      const updated = await api.updateContact(selectedContact._id, {
+        status: assistData.suggested_outcome === 'resolved' ? 'closed' : 'in_progress',
+        notes: selectedContact.notes ? `${selectedContact.notes}\n${noteEntry}` : noteEntry,
+      });
+      setSelectedContact(updated);
+      setSavedNotice(`Saved AI guidance and updated status on ${selectedContact.name}'s CRM record in MongoDB.`);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to save to customer record.');
+    } finally {
+      setIsSavingRecord(false);
+    }
+  };
+
+  const handleCreateSupportCase = async () => {
+    if (!assistData) return;
+    setIsSavingRecord(true);
+    setErrorMsg(null);
+    setSavedNotice(null);
+    try {
+      const created = await api.createCase({
+        title: `Agent Assist: ${customerQuery.trim().slice(0, 60)}`,
+        description: `Customer Query: ${customerQuery.trim()}\n\nRecommended Resolution: ${assistData.recommended_reply}\n\nAction Items: ${assistData.action_items.join('; ')}`,
+        customer_id: selectedContact?._id,
+        customer_name: selectedContact?.name || 'Walk-in / Unlinked Caller',
+        customer_phone: selectedContact?.phone_number || '',
+        priority: assistData.suggested_outcome === 'escalated' ? 'high' : 'medium',
+      });
+      setSavedNotice(
+        `Support Case #${created._id.slice(-6).toUpperCase()} created in MongoDB${selectedContact ? ` for ${selectedContact.name}` : ''}.`
+      );
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to create support case.');
+    } finally {
+      setIsSavingRecord(false);
+    }
+  };
+
+  const handleAddFollowUpTask = async (actionText: string) => {
+    if (onScheduleFollowUp) {
+      onScheduleFollowUp(actionText);
+    }
+    if (!selectedContact) {
+      setErrorMsg('Select a customer from the dropdown above to attach this follow-up task to their CRM record.');
+      return;
+    }
+    setErrorMsg(null);
+    try {
+      const dueDate = new Date(Date.now() + 86400000).toISOString();
+      await api.createContactFollowUp(selectedContact._id, {
+        description: actionText,
+        due_at: dueDate,
+      });
+      setSavedNotice(`Follow-up task "${actionText}" scheduled for ${selectedContact.name} in MongoDB.`);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to create follow-up task.');
+    }
+  };
+
   const handleQuickPreset = (presetText: string) => {
     setCustomerQuery(presetText);
   };
@@ -140,7 +212,7 @@ export const AgentAssistPanel: React.FC<AgentAssistPanelProps> = ({
             Agent Assist Copilot
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            Real-time conversational intelligence powered by OpenRouter: smart recommendations, objection handling, and follow-up generation
+            Real-time conversational intelligence powered by OpenRouter: smart recommendations, objection handling, and CRM persistence
           </p>
         </div>
 
@@ -166,14 +238,25 @@ export const AgentAssistPanel: React.FC<AgentAssistPanelProps> = ({
       </div>
 
       {errorMsg && (
-        <div className="p-3 bg-red-950/50 border border-red-800/60 rounded-xl text-red-200 text-xs">
-          {errorMsg}
+        <div className="p-3 bg-red-950/50 border border-red-800/60 rounded-xl text-red-200 text-xs flex items-center justify-between">
+          <span>{errorMsg}</span>
+          <button onClick={() => setErrorMsg(null)} className="underline ml-2">Dismiss</button>
+        </div>
+      )}
+
+      {savedNotice && (
+        <div className="p-3 bg-emerald-950/50 border border-emerald-800/60 rounded-xl text-emerald-200 text-xs flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{savedNotice}</span>
+          </div>
+          <button onClick={() => setSavedNotice(null)} className="underline ml-2">Dismiss</button>
         </div>
       )}
 
       {/* Query Input Box */}
       <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-2">
           <label className="text-xs font-semibold text-slate-300">
             Customer Statement or Objection:
           </label>
@@ -293,13 +376,31 @@ export const AgentAssistPanel: React.FC<AgentAssistPanelProps> = ({
             </div>
 
             {assistData.suggested_outcome && (
-              <div className="flex items-center gap-2 pt-2 text-xs">
+              <div className="flex items-center gap-2 pt-1 text-xs">
                 <span className="text-slate-400">Suggested Call Outcome:</span>
                 <span className="capitalize px-2.5 py-0.5 rounded-full font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
                   {assistData.suggested_outcome.replace('_', ' ')}
                 </span>
               </div>
             )}
+
+            {/* CRM & Case Persistence Actions */}
+            <div className="pt-3 border-t border-slate-800 flex flex-wrap items-center gap-2">
+              <button
+                onClick={handleSaveToCustomerRecord}
+                disabled={isSavingRecord}
+                className="px-3.5 py-2 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-300 border border-emerald-500/40 rounded-xl text-xs font-semibold transition-all"
+              >
+                Save Resolution Note to Customer CRM
+              </button>
+              <button
+                onClick={handleCreateSupportCase}
+                disabled={isSavingRecord}
+                className="px-3.5 py-2 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/40 rounded-xl text-xs font-semibold transition-all"
+              >
+                Open Support Case from Analysis
+              </button>
+            </div>
           </div>
 
           {/* Extracted Needs & Recommended Action Items */}
@@ -333,15 +434,13 @@ export const AgentAssistPanel: React.FC<AgentAssistPanelProps> = ({
                       <span className="w-1.5 h-1.5 rounded-full bg-amber-400 mt-1.5 shrink-0" />
                       <span>{action}</span>
                     </div>
-                    {onScheduleFollowUp && (
-                      <button
-                        onClick={() => onScheduleFollowUp(action)}
-                        className="text-[10px] px-2 py-1 bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-white rounded border border-amber-500/30 font-medium shrink-0"
-                        title="Add to follow-up tasks"
-                      >
-                        + Task
-                      </button>
-                    )}
+                    <button
+                      onClick={() => handleAddFollowUpTask(action)}
+                      className="text-[10px] px-2 py-1 bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-white rounded border border-amber-500/30 font-medium shrink-0"
+                      title="Save follow-up task to customer CRM"
+                    >
+                      + Follow-Up
+                    </button>
                   </div>
                 ))}
               </div>

@@ -22,10 +22,27 @@ router = APIRouter(prefix="/api/contacts", tags=["Customer CRM"])
 def normalize_phone_number(raw: str) -> str:
     """Normalize phone number to international E.164-like clean format."""
     cleaned = raw.strip()
-    # Keep leading + if present, remove dashes, spaces, parentheses
     has_plus = cleaned.startswith("+")
     digits_only = "".join(filter(str.isdigit, cleaned))
     return f"+{digits_only}" if has_plus else digits_only
+
+def deduplicate_contact_docs(raw_docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Deduplicate contact documents by normalized phone number while preserving non-default status/notes."""
+    seen_keys: Dict[str, Dict[str, Any]] = {}
+    for d in raw_docs:
+        norm_phone = normalize_phone_number(d.get("phone_number", ""))
+        dedup_key = norm_phone or f"id:{d.get('_id', '')}"
+        if dedup_key not in seen_keys:
+            seen_keys[dedup_key] = dict(d)
+        else:
+            curr = seen_keys[dedup_key]
+            if curr.get("status") == "new" and d.get("status") and d.get("status") != "new":
+                curr["status"] = d["status"]
+            if not curr.get("notes") and d.get("notes"):
+                curr["notes"] = d["notes"]
+            if not curr.get("last_interaction_at") and d.get("last_interaction_at"):
+                curr["last_interaction_at"] = d["last_interaction_at"]
+    return list(seen_keys.values())
 
 @router.post("", response_model=ContactResponse)
 async def create_contact(
@@ -38,17 +55,50 @@ async def create_contact(
 
     clean_phone = normalize_phone_number(req.phone_number)
     now_iso = datetime.now(timezone.utc).isoformat()
-    contact_id = str(uuid.uuid4())
 
     assigned_agent = req.assigned_agent_id or current_user["_id"]
-
-    # Look up agent name if assigned
     agent_name = current_user["name"]
     if assigned_agent != current_user["_id"]:
         agent_doc = await db.users.find_one({"_id": assigned_agent})
         if agent_doc:
             agent_name = agent_doc["name"]
 
+    # Prevent duplicate customer rows for the same normalized telephone number
+    existing = await db.contacts.find_one(
+        {"phone_number": clean_phone},
+        sort=[("updated_at", -1)]
+    )
+    if existing:
+        merged_tags = list(dict.fromkeys((existing.get("tags") or []) + (req.tags or [])))
+        updates = {
+            "name": req.name.strip(),
+            "phone_number": clean_phone,
+            "email": req.email.strip().lower() if req.email else existing.get("email"),
+            "assigned_agent_id": assigned_agent,
+            "assigned_agent_name": agent_name,
+            "notes": req.notes if req.notes is not None else existing.get("notes", ""),
+            "tags": merged_tags,
+            "status": req.status or existing.get("status", "new"),
+            "updated_at": now_iso,
+        }
+        await db.contacts.update_one({"_id": existing["_id"]}, {"$set": updates})
+        updated_doc = await db.contacts.find_one({"_id": existing["_id"]})
+        return ContactResponse(
+            _id=updated_doc["_id"],
+            name=updated_doc["name"],
+            phone_number=updated_doc["phone_number"],
+            email=updated_doc.get("email"),
+            assigned_agent_id=updated_doc.get("assigned_agent_id"),
+            assigned_agent_name=updated_doc.get("assigned_agent_name", agent_name),
+            notes=updated_doc.get("notes", ""),
+            tags=updated_doc.get("tags", []),
+            status=updated_doc.get("status", "new"),
+            last_interaction_at=updated_doc.get("last_interaction_at"),
+            created_at=updated_doc.get("created_at", now_iso),
+            updated_at=updated_doc.get("updated_at", now_iso)
+        )
+
+    contact_id = str(uuid.uuid4())
     contact_doc = {
         "_id": contact_id,
         "name": req.name.strip(),
@@ -86,6 +136,7 @@ async def list_contacts(
     search: Optional[str] = Query(None, description="Search by name or telephone number"),
     status: Optional[str] = Query(None, description="Filter by status"),
     assigned_to_me: Optional[bool] = Query(False, description="Filter contacts assigned to current user"),
+    include_duplicates: Optional[bool] = Query(False, description="Include raw historical duplicate records"),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     db = get_db()
@@ -102,19 +153,45 @@ async def list_contacts(
 
     if search and search.strip():
         term = search.strip()
-        query["$or"] = [
+        or_conditions = [
             {"name": {"$regex": term, "$options": "i"}},
             {"phone_number": {"$regex": term, "$options": "i"}},
             {"email": {"$regex": term, "$options": "i"}},
         ]
+        digits_term = "".join(filter(str.isdigit, term))
+        if digits_term and digits_term != term:
+            or_conditions.append({"phone_number": {"$regex": digits_term, "$options": "i"}})
+        query["$or"] = or_conditions
 
-    cursor = db.contacts.find(query).sort("updated_at", -1).limit(100)
-    docs = await cursor.to_list(length=100)
+    cursor = db.contacts.find(query).sort("updated_at", -1).limit(200)
+    raw_docs = await cursor.to_list(length=200)
+
+    # Deduplicate displayed rows by normalized phone_number (preserving underlying DB records)
+    docs: List[Dict[str, Any]] = []
+    if include_duplicates:
+        docs = raw_docs
+    else:
+        seen_keys: Dict[str, Dict[str, Any]] = {}
+        for d in raw_docs:
+            norm_phone = normalize_phone_number(d.get("phone_number", ""))
+            dedup_key = norm_phone or f"id:{d['_id']}"
+            if dedup_key not in seen_keys:
+                seen_keys[dedup_key] = d
+            else:
+                # Prefer non-'new' status or non-empty notes if the latest copy had default values
+                curr = seen_keys[dedup_key]
+                if curr.get("status") == "new" and d.get("status") and d.get("status") != "new":
+                    curr["status"] = d["status"]
+                if not curr.get("notes") and d.get("notes"):
+                    curr["notes"] = d["notes"]
+                if not curr.get("last_interaction_at") and d.get("last_interaction_at"):
+                    curr["last_interaction_at"] = d["last_interaction_at"]
+        docs = list(seen_keys.values())
 
     # Resolve agent names
     agent_ids = list({d.get("assigned_agent_id") for d in docs if d.get("assigned_agent_id")})
     agents_cursor = db.users.find({"_id": {"$in": agent_ids}})
-    agents_list = await agents_cursor.to_list(length=len(agent_ids))
+    agents_list = await agents_cursor.to_list(length=max(1, len(agent_ids)))
     agent_map = {a["_id"]: a["name"] for a in agents_list}
 
     return [
@@ -242,7 +319,7 @@ async def get_contact_interaction_history(
     contact_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """Retrieve complete interaction history: calls, notes, transcripts, and follow-ups."""
+    """Retrieve complete interaction history: calls, notes, cases, and follow-ups across matching phone records."""
     db = get_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database service unavailable.")
@@ -251,19 +328,37 @@ async def get_contact_interaction_history(
     if not contact:
         raise HTTPException(status_code=404, detail="Contact not found.")
 
-    # Get calls for this contact (by contact_id or by phone_number)
+    norm_phone = normalize_phone_number(contact.get("phone_number", ""))
+    sibling_docs = await db.contacts.find({"phone_number": norm_phone}, {"_id": 1}).to_list(length=50)
+    all_contact_ids = list({contact_id} | {s["_id"] for s in sibling_docs})
+
+    # Get calls for this contact (by any matching contact_id or by phone_number)
     calls_cursor = db.calls.find({
         "$or": [
-            {"contact_id": contact_id},
-            {"recipient_number": contact["phone_number"]},
-            {"caller_number": contact["phone_number"]}
+            {"contact_id": {"$in": all_contact_ids}},
+            {"recipient_number": norm_phone},
+            {"caller_number": norm_phone}
         ]
-    }).sort("started_at", -1).limit(20)
-    calls = await calls_cursor.to_list(length=20)
+    }).sort("started_at", -1).limit(30)
+    calls = await calls_cursor.to_list(length=30)
 
-    # Get follow-ups
-    follow_ups_cursor = db.follow_ups.find({"contact_id": contact_id}).sort("due_at", 1).limit(20)
-    follow_ups = await follow_ups_cursor.to_list(length=20)
+    # Get follow-ups across all matching contact IDs or phone
+    follow_ups_cursor = db.follow_ups.find({
+        "$or": [
+            {"contact_id": {"$in": all_contact_ids}},
+            {"contact_phone": norm_phone}
+        ]
+    }).sort("due_at", 1).limit(30)
+    follow_ups = await follow_ups_cursor.to_list(length=30)
+
+    # Get support cases linked to this customer
+    cases_cursor = db.cases.find({
+        "$or": [
+            {"customer_id": {"$in": all_contact_ids}},
+            {"customer_phone": norm_phone}
+        ]
+    }).sort("created_at", -1).limit(20)
+    cases = await cases_cursor.to_list(length=20)
 
     return {
         "contact": {
@@ -274,7 +369,8 @@ async def get_contact_interaction_history(
             "notes": contact.get("notes", "")
         },
         "calls": calls,
-        "follow_ups": follow_ups
+        "follow_ups": follow_ups,
+        "cases": cases
     }
 
 # ----------------- Follow-Ups Sub-Endpoints -----------------

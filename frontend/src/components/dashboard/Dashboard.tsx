@@ -173,73 +173,121 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, onSelectContac
       </div>
 
       {/* Main Action Workflows */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+        {/* Staff Intercom WebRTC Calling */}
+        <div
+          onClick={() => onNavigate('calls')}
+          className="group cursor-pointer bg-gradient-to-b from-slate-900 to-emerald-950/20 border border-slate-800 hover:border-emerald-500/50 p-5 rounded-2xl transition-all shadow-md hover:shadow-emerald-500/10 flex flex-col justify-between"
+        >
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-600/20 text-emerald-400 flex items-center justify-center group-hover:bg-emerald-600 group-hover:text-white transition-colors">
+                <PhoneCall className="w-5 h-5" />
+              </div>
+              <ArrowUpRight className="w-4 h-4 text-slate-500 group-hover:text-emerald-400 transition-colors" />
+            </div>
+            <div className="flex items-center gap-1.5 mb-1">
+              <h3 className="font-semibold text-white text-sm">Staff Intercom</h3>
+              <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                P2P
+              </span>
+            </div>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Live two-way WebRTC microphone audio calling between staff browser sessions.
+            </p>
+          </div>
+          <div className="mt-3 pt-2 border-t border-slate-800/80 flex items-center gap-1.5 text-[10px] text-emerald-400 font-medium">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span>{onlineUserIds.size} Colleagues Online</span>
+          </div>
+        </div>
+
         {/* Softphone Dialer */}
         <div
           onClick={() => onNavigate('softphone')}
-          className="group cursor-pointer bg-gradient-to-b from-slate-900 to-indigo-950/20 border border-slate-800 hover:border-indigo-500/50 p-5 rounded-2xl transition-all shadow-md hover:shadow-indigo-500/10"
+          className="group cursor-pointer bg-gradient-to-b from-slate-900 to-indigo-950/20 border border-slate-800 hover:border-indigo-500/50 p-5 rounded-2xl transition-all shadow-md hover:shadow-indigo-500/10 flex flex-col justify-between"
         >
-          <div className="flex items-center justify-between mb-3">
-            <div className="w-10 h-10 rounded-xl bg-indigo-600/20 text-indigo-400 flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-colors">
-              <Phone className="w-5 h-5" />
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <div className="w-10 h-10 rounded-xl bg-indigo-600/20 text-indigo-400 flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-colors">
+                <Phone className="w-5 h-5" />
+              </div>
+              <ArrowUpRight className="w-4 h-4 text-slate-500 group-hover:text-indigo-400 transition-colors" />
             </div>
-            <ArrowUpRight className="w-4 h-4 text-slate-500 group-hover:text-indigo-400 transition-colors" />
+            <h3 className="font-semibold text-white text-sm mb-1">Softphone Dialer</h3>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              E.164 telephone keypad with DTMF audio tones, live call timer, and wrap-up outcome logger.
+            </p>
           </div>
-          <h3 className="font-semibold text-white text-sm mb-1">Softphone Dialer</h3>
-          <p className="text-xs text-slate-400 leading-relaxed">
-            E.164 phone keypad with DTMF audio tones, live call timer, and wrap-up outcome logger.
-          </p>
+          <div className="mt-3 pt-2 border-t border-slate-800/80 text-[10px] text-slate-500">
+            PSTN Carrier: {carrierStatus?.is_configured ? 'Configured' : 'Unconfigured'}
+          </div>
         </div>
 
         {/* Customer CRM */}
         <div
           onClick={() => onNavigate('crm')}
-          className="group cursor-pointer bg-gradient-to-b from-slate-900 to-blue-950/20 border border-slate-800 hover:border-blue-500/50 p-5 rounded-2xl transition-all shadow-md hover:shadow-blue-500/10"
+          className="group cursor-pointer bg-gradient-to-b from-slate-900 to-blue-950/20 border border-slate-800 hover:border-blue-500/50 p-5 rounded-2xl transition-all shadow-md hover:shadow-blue-500/10 flex flex-col justify-between"
         >
-          <div className="flex items-center justify-between mb-3">
-            <div className="w-10 h-10 rounded-xl bg-blue-600/20 text-blue-400 flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-colors">
-              <Users className="w-5 h-5" />
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <div className="w-10 h-10 rounded-xl bg-blue-600/20 text-blue-400 flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                <Users className="w-5 h-5" />
+              </div>
+              <ArrowUpRight className="w-4 h-4 text-slate-500 group-hover:text-blue-400 transition-colors" />
             </div>
-            <ArrowUpRight className="w-4 h-4 text-slate-500 group-hover:text-blue-400 transition-colors" />
+            <h3 className="font-semibold text-white text-sm mb-1">Customer CRM</h3>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Search customers by phone number or name with 1-click Click-to-Call and interaction history.
+            </p>
           </div>
-          <h3 className="font-semibold text-white text-sm mb-1">Customer CRM</h3>
-          <p className="text-xs text-slate-400 leading-relaxed">
-            Search customers by phone number or name with 1-click Click-to-Call and interaction history.
-          </p>
+          <div className="mt-3 pt-2 border-t border-slate-800/80 text-[10px] text-slate-500">
+            {contacts.length} Customers Available
+          </div>
         </div>
 
         {/* Agent Assist AI */}
         <div
           onClick={() => onNavigate('agent_assist')}
-          className="group cursor-pointer bg-gradient-to-b from-slate-900 to-purple-950/20 border border-slate-800 hover:border-purple-500/50 p-5 rounded-2xl transition-all shadow-md hover:shadow-purple-500/10"
+          className="group cursor-pointer bg-gradient-to-b from-slate-900 to-purple-950/20 border border-slate-800 hover:border-purple-500/50 p-5 rounded-2xl transition-all shadow-md hover:shadow-purple-500/10 flex flex-col justify-between"
         >
-          <div className="flex items-center justify-between mb-3">
-            <div className="w-10 h-10 rounded-xl bg-purple-600/20 text-purple-400 flex items-center justify-center group-hover:bg-purple-600 group-hover:text-white transition-colors">
-              <Sparkles className="w-5 h-5" />
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <div className="w-10 h-10 rounded-xl bg-purple-600/20 text-purple-400 flex items-center justify-center group-hover:bg-purple-600 group-hover:text-white transition-colors">
+                <Sparkles className="w-5 h-5" />
+              </div>
+              <ArrowUpRight className="w-4 h-4 text-slate-500 group-hover:text-purple-400 transition-colors" />
             </div>
-            <ArrowUpRight className="w-4 h-4 text-slate-500 group-hover:text-purple-400 transition-colors" />
+            <h3 className="font-semibold text-white text-sm mb-1">Agent Assist AI</h3>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Real-time copilot extracting customer objections, suggesting immediate spoken replies, and action items.
+            </p>
           </div>
-          <h3 className="font-semibold text-white text-sm mb-1">Agent Assist AI</h3>
-          <p className="text-xs text-slate-400 leading-relaxed">
-            Real-time copilot extracting customer objections, suggesting immediate spoken replies, and action items.
-          </p>
+          <div className="mt-3 pt-2 border-t border-slate-800/80 text-[10px] text-slate-500">
+            OpenRouter LLM Ready
+          </div>
         </div>
 
         {/* Spoken Voice AI */}
         <div
           onClick={() => onNavigate('voice_ai')}
-          className="group cursor-pointer bg-gradient-to-b from-slate-900 to-cyan-950/20 border border-slate-800 hover:border-cyan-500/50 p-5 rounded-2xl transition-all shadow-md hover:shadow-cyan-500/10"
+          className="group cursor-pointer bg-gradient-to-b from-slate-900 to-cyan-950/20 border border-slate-800 hover:border-cyan-500/50 p-5 rounded-2xl transition-all shadow-md hover:shadow-cyan-500/10 flex flex-col justify-between"
         >
-          <div className="flex items-center justify-between mb-3">
-            <div className="w-10 h-10 rounded-xl bg-cyan-600/20 text-cyan-400 flex items-center justify-center group-hover:bg-cyan-600 group-hover:text-white transition-colors">
-              <Mic className="w-5 h-5" />
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <div className="w-10 h-10 rounded-xl bg-cyan-600/20 text-cyan-400 flex items-center justify-center group-hover:bg-cyan-600 group-hover:text-white transition-colors">
+                <Mic className="w-5 h-5" />
+              </div>
+              <ArrowUpRight className="w-4 h-4 text-slate-500 group-hover:text-cyan-400 transition-colors" />
             </div>
-            <ArrowUpRight className="w-4 h-4 text-slate-500 group-hover:text-cyan-400 transition-colors" />
+            <h3 className="font-semibold text-white text-sm mb-1">Spoken Voice AI</h3>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Interactive AI conversation utilizing real microphone speech recognition and natural spoken synthesis.
+            </p>
           </div>
-          <h3 className="font-semibold text-white text-sm mb-1">Spoken Voice AI</h3>
-          <p className="text-xs text-slate-400 leading-relaxed">
-            Interactive AI conversation utilizing real microphone speech recognition and natural spoken synthesis.
-          </p>
+          <div className="mt-3 pt-2 border-t border-slate-800/80 text-[10px] text-slate-500">
+            Browser Web Speech API
+          </div>
         </div>
       </div>
 

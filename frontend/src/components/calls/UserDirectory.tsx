@@ -35,7 +35,13 @@ export const UserDirectory: React.FC = () => {
 
   useEffect(() => {
     fetchUsers();
+    const interval = setInterval(fetchUsers, 4000);
+    return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    fetchUsers();
+  }, [onlineUserIds.size]);
 
   const filteredUsers = users.filter((u) =>
     u.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -142,10 +148,17 @@ export const UserDirectory: React.FC = () => {
                 <button
                   onClick={() => startCall(u._id, u.name)}
                   disabled={!isOnline || isCallInProgress}
-                  className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:from-slate-800 disabled:to-slate-800 text-white disabled:text-slate-600 text-xs font-semibold px-4 py-2.5 rounded-xl transition-all shadow-md shadow-emerald-600/20 disabled:shadow-none cursor-pointer disabled:cursor-not-allowed"
+                  title={
+                    !isOnline
+                      ? 'Colleague is currently offline. Log in with this account in another browser window to test live calling.'
+                      : isCallInProgress
+                      ? 'Another call is currently active.'
+                      : 'Click to start two-way WebRTC audio call'
+                  }
+                  className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:from-slate-800 disabled:to-slate-800 text-white disabled:text-slate-500 text-xs font-semibold px-4 py-2.5 rounded-xl transition-all shadow-md shadow-emerald-600/20 disabled:shadow-none cursor-pointer disabled:cursor-not-allowed"
                 >
                   <Phone className="w-3.5 h-3.5" />
-                  <span>Call</span>
+                  <span>{isOnline ? 'Call' : 'Offline'}</span>
                 </button>
               </div>
             );

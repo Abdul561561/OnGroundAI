@@ -14,11 +14,13 @@ import {
   Bot,
   User,
   CheckCircle2,
+  AlertCircle,
 } from 'lucide-react';
 
 export const CallHistory: React.FC = () => {
   const [calls, setCalls] = useState<CallRecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [selectedCall, setSelectedCall] = useState<CallRecord | null>(null);
   const [transcripts, setTranscripts] = useState<Transcript[]>([]);
   const [loadingTranscripts, setLoadingTranscripts] = useState(false);
@@ -31,11 +33,13 @@ export const CallHistory: React.FC = () => {
 
   const fetchCalls = async () => {
     setLoading(true);
+    setError(null);
     try {
       const records = await api.getCalls();
       setCalls(records);
-    } catch (e) {
+    } catch (e: any) {
       console.error('Error fetching call records:', e);
+      setError(e.message || 'Failed to load call history records from MongoDB Atlas');
     } finally {
       setLoading(false);
     }
@@ -130,9 +134,22 @@ export const CallHistory: React.FC = () => {
       {/* Calls Table Card */}
       <div className="bg-slate-900/70 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
         {loading ? (
-          <div className="p-12 text-center text-xs text-slate-500 flex items-center justify-center gap-2">
-            <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
+          <div className="p-12 text-center text-xs text-slate-500 flex flex-col items-center justify-center gap-2">
+            <Loader2 className="w-5 h-5 animate-spin text-blue-400" />
             <span>Loading records from MongoDB Atlas...</span>
+          </div>
+        ) : error ? (
+          <div className="p-12 text-center text-rose-400 text-xs space-y-2">
+            <AlertCircle className="w-8 h-8 text-rose-500 mx-auto" />
+            <p className="font-semibold text-white">Error Loading Call History</p>
+            <p className="max-w-md mx-auto text-rose-400/80">{error}</p>
+            <button
+              onClick={fetchCalls}
+              className="mt-2 px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Retry</span>
+            </button>
           </div>
         ) : calls.length === 0 ? (
           <div className="p-12 text-center text-slate-500 text-xs space-y-2">

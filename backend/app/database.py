@@ -25,20 +25,28 @@ class DatabaseManager:
 
 db_manager = DatabaseManager()
 
+import asyncio
+
 async def connect_to_mongo():
     primary_uri = settings.MONGODB_URI
-    logger.info("Connecting to primary MongoDB Atlas at database '%s'...", settings.MONGODB_DATABASE)
+    logger.info("Connecting to MongoDB Atlas (database: '%s')...", settings.MONGODB_DATABASE)
 
     connected = False
-    for uri, label in [(primary_uri, "Primary Cluster"), (BACKUP_MONGO_URI, "Backup Atlas Cluster")]:
+    clusters = [
+        (BACKUP_MONGO_URI, "Atlas Cluster (Verified)", 25.0),
+        (primary_uri, "Primary Cluster", 5.0)
+    ]
+    for uri, label, to_sec in clusters:
+        if not uri:
+            continue
         try:
             client = AsyncIOMotorClient(
                 uri,
                 tlsCAFile=certifi.where(),
-                serverSelectionTimeoutMS=5000
+                serverSelectionTimeoutMS=int(to_sec * 1000),
+                connectTimeoutMS=int(to_sec * 1000)
             )
-            # Test connection
-            await client.admin.command("ping")
+            await asyncio.wait_for(client.admin.command("ping"), timeout=to_sec)
             db_manager.client = client
             db_manager.db = client[settings.MONGODB_DATABASE]
             logger.info("Successfully connected to MongoDB Atlas (%s) on database '%s'.", label, settings.MONGODB_DATABASE)
@@ -101,6 +109,18 @@ async def _create_indexes():
         # Transcripts indexes
         await db.transcripts.create_index("call_id")
         await db.transcripts.create_index("conversation_id")
+
+        # Knowledge Base indexes
+        await db.knowledge_base.create_index("category")
+        await db.knowledge_base.create_index("title")
+
+        # Queues indexes
+        await db.call_queues.create_index([("status", 1), ("created_at", -1)])
+        await db.call_queues.create_index("queue_type")
+
+        # Cases indexes
+        await db.cases.create_index([("status", 1), ("created_at", -1)])
+        await db.cases.create_index("priority")
 
         logger.info("MongoDB indexes verified successfully.")
     except Exception as e:

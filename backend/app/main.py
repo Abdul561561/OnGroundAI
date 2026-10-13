@@ -14,6 +14,10 @@ from app.routes.calls import router as calls_router
 from app.routes.contacts import router as contacts_router
 from app.routes.telephony import router as telephony_router
 from app.routes.supervisor import router as supervisor_router
+from app.routes.knowledge_base import router as kb_router
+from app.routes.queues import router as queues_router
+from app.routes.cases import router as cases_router
+from app.routes.analytics import router as analytics_router
 from app.telephony.manager import get_telephony_provider
 from app.services.auth_service import decode_token
 from app.services.signaling_service import manager
@@ -41,16 +45,18 @@ app = FastAPI(
 )
 
 # CORS configuration
-allowed_origins = [
-    settings.FRONTEND_ORIGIN,
+raw_origins = [o.strip() for o in settings.FRONTEND_ORIGIN.split(",") if o.strip()]
+default_origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:3000",
 ]
+allowed_origins = list(dict.fromkeys(raw_origins + default_origins))
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -63,6 +69,10 @@ app.include_router(calls_router)
 app.include_router(contacts_router)
 app.include_router(telephony_router)
 app.include_router(supervisor_router)
+app.include_router(kb_router)
+app.include_router(queues_router)
+app.include_router(cases_router)
+app.include_router(analytics_router)
 
 @app.get("/api/health")
 async def health_check():
