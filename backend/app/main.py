@@ -47,6 +47,8 @@ app = FastAPI(
 # CORS configuration
 raw_origins = [o.strip() for o in settings.FRONTEND_ORIGIN.split(",") if o.strip()]
 default_origins = [
+    "https://on-ground-ai.vercel.app",
+    "https://onground-ai.vercel.app",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:3000",
@@ -73,6 +75,16 @@ app.include_router(kb_router)
 app.include_router(queues_router)
 app.include_router(cases_router)
 app.include_router(analytics_router)
+
+@app.get("/")
+async def root():
+    db = get_db()
+    return {
+        "status": "healthy",
+        "service": "OnGround AI Intelligent Call Centre Platform",
+        "version": "1.0.0",
+        "database": "connected" if db is not None else "disconnected"
+    }
 
 @app.get("/api/health")
 async def health_check():

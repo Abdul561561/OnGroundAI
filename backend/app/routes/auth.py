@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 from typing import List, Dict, Any
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Query
 from app.database import get_db
 from app.models.schemas import (
     UserRegister,
@@ -81,10 +81,16 @@ async def register(req: UserRegister):
     )
 
 @router.post("/login", response_model=TokenResponse)
-async def login(req: UserLogin):
-    db = get_db()
+async def login(req: UserLogin, db: Any = Depends(get_db)):
     if db is None:
-        raise HTTPException(status_code=503, detail="Database service unavailable.")
+        from app.database import ensure_db_connected
+        db = await ensure_db_connected()
+
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database service unavailable. Please ensure MONGODB_URI is configured on Render and 0.0.0.0/0 is allowed in Atlas Network Access."
+        )
 
     normalized_email = req.email.strip().lower()
     user = await db.users.find_one({"email": normalized_email})
@@ -100,10 +106,11 @@ async def login(req: UserLogin):
             detail="Invalid email or password."
         )
 
-    user_role = user.get("role", "agent")
+    raw_role = user.get("role") or "agent"
+    user_role = raw_role if raw_role in ("agent", "supervisor", "admin") else "agent"
 
     # Set user status to available
-    await db.users.update_one({"_id": user["_id"]}, {"$set": {"status": "available"}})
+    await db.users.update_one({"_id": user["_id"]}, {"$set": {"status": "available", "role": user_role}})
 
     token = create_access_token(data={
         "sub": user["_id"],
@@ -120,20 +127,59 @@ async def login(req: UserLogin):
             name=user["name"],
             email=user["email"],
             role=user_role,
-            created_at=user.get("created_at", datetime.now(timezone.utc).isoformat()),
+            created_at=user.get("created_at") or datetime.now(timezone.utc).isoformat(),
             status="available"
         )
     )
 
+@router.post("/init-demo-users")
+async def initialize_demo_users_endpoint(admin_key: str = Query(None), db: Any = Depends(get_db)):
+    """
+    Controlled demo user initialization endpoint.
+    - Idempotent: Skips any existing users and never overwrites existing passwords.
+    - Authorized if ALLOW_DEMO_SEED=true, or database currently has 0 users, or admin_key matches JWT_SECRET.
+    """
+    import os
+    from app.config import settings
+    from app.services.seed_service import seed_demo_users
+
+    if db is None:
+        from app.database import ensure_db_connected
+        db = await ensure_db_connected()
+
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database service unavailable."
+        )
+
+    user_count = await db.users.count_documents({})
+    allow_seed_env = os.getenv("ALLOW_DEMO_SEED", "false").lower() in ("true", "1")
+    is_key_valid = admin_key and (admin_key == settings.JWT_SECRET)
+
+    if not allow_seed_env and not is_key_valid and user_count > 0:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Demo user initialization is restricted when accounts exist. Provide valid admin_key or set ALLOW_DEMO_SEED=true."
+        )
+
+    summary = await seed_demo_users(db)
+    return {
+        "status": "success",
+        "summary": summary
+    }
+
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_profile(current_user: Dict[str, Any] = Depends(get_current_user)):
+    raw_role = current_user.get("role") or "agent"
+    user_role = raw_role if raw_role in ("agent", "supervisor", "admin") else "agent"
     return UserResponse(
         _id=current_user["_id"],
         name=current_user["name"],
         email=current_user["email"],
-        role=current_user.get("role", "agent"),
-        created_at=current_user.get("created_at", ""),
-        status=current_user.get("status", "available")
+        role=user_role,
+        created_at=current_user.get("created_at") or "",
+        status=current_user.get("status") or "available"
     )
 
 @router.put("/status", response_model=UserResponse)

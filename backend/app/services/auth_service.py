@@ -49,7 +49,10 @@ def decode_token(token: str) -> Dict[str, Any]:
             detail="Invalid authentication token."
         )
 
-async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Dict[str, Any]:
+async def get_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    db: Any = Depends(get_db)
+) -> Dict[str, Any]:
     """FastAPI dependency to authenticate the user from Bearer token."""
     if not credentials:
         raise HTTPException(
@@ -65,7 +68,10 @@ async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] =
             detail="Invalid token payload: missing subject."
         )
 
-    db = get_db()
+    if db is None:
+        from app.database import ensure_db_connected
+        db = await ensure_db_connected()
+
     if db is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

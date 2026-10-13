@@ -27,15 +27,17 @@ db_manager = DatabaseManager()
 
 import asyncio
 
-async def connect_to_mongo():
+async def connect_to_mongo() -> bool:
     primary_uri = settings.MONGODB_URI
     logger.info("Connecting to MongoDB Atlas (database: '%s')...", settings.MONGODB_DATABASE)
 
     connected = False
-    clusters = [
-        (BACKUP_MONGO_URI, "Atlas Cluster (Verified)", 25.0),
-        (primary_uri, "Primary Cluster", 5.0)
-    ]
+    clusters = []
+    if primary_uri:
+        clusters.append((primary_uri, "Primary Cluster", 10.0))
+    if BACKUP_MONGO_URI and BACKUP_MONGO_URI != primary_uri:
+        clusters.append((BACKUP_MONGO_URI, "Atlas Cluster (Verified)", 15.0))
+
     for uri, label, to_sec in clusters:
         if not uri:
             continue
@@ -55,16 +57,35 @@ async def connect_to_mongo():
         except Exception as e:
             logger.warning(
                 "Could not connect to MongoDB Atlas (%s): %s. "
-                "Note: If SSL TLS alert occurs, please ensure 0.0.0.0/0 is enabled in MongoDB Atlas Network Access.",
+                "Note: Please verify MONGODB_URI and ensure 0.0.0.0/0 is added in MongoDB Atlas Network Access.",
                 label,
                 e
             )
 
     if not connected:
-        raise RuntimeError("Failed to connect to both primary and backup MongoDB Atlas clusters.")
+        logger.error(
+            "CRITICAL: Failed to connect to MongoDB Atlas during startup. "
+            "Please ensure MONGODB_URI is configured and 0.0.0.0/0 is enabled in Atlas Network Access. "
+            "The backend will remain online to serve health and diagnostics."
+        )
+        db_manager.client = None
+        db_manager.db = None
+        return False
 
     # Ensure required indexes
-    await _create_indexes()
+    try:
+        await _create_indexes()
+    except Exception as ie:
+        logger.warning("Error creating database indexes: %s", ie)
+
+    return True
+
+async def ensure_db_connected():
+    """Ensure database connection exists, attempting reconnection if currently disconnected."""
+    if db_manager.db is not None:
+        return db_manager.db
+    await connect_to_mongo()
+    return db_manager.db
 
 async def _create_indexes():
     """Create database indexes for performance, search and unique constraints."""

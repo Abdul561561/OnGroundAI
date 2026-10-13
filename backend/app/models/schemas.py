@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Literal
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
 
 # ----------------- User & RBAC Models -----------------
 
@@ -29,7 +29,21 @@ class UserResponse(BaseModel):
     email: str
     role: UserRole = "agent"
     status: str = "available"
-    created_at: str
+    created_at: Optional[str] = ""
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def sanitize_role(cls, v):
+        if not v or v not in ("agent", "supervisor", "admin"):
+            return "agent"
+        return v
+
+    @field_validator("created_at", mode="before")
+    @classmethod
+    def sanitize_created_at(cls, v):
+        if v is None:
+            return ""
+        return str(v)
 
     model_config = ConfigDict(populate_by_name=True)
 
