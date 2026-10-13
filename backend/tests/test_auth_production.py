@@ -181,3 +181,64 @@ async def test_init_demo_users_endpoint_idempotent():
         summary = data["summary"]
         assert summary["total_checked"] >= 4
         assert summary["skipped_count"] >= 3
+
+@pytest.mark.asyncio
+async def test_cors_preflight_login():
+    transport = ASGITransport(app=app)
+    headers = {
+        "Origin": "https://on-ground-ai.vercel.app",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type,authorization"
+    }
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.options("/api/auth/login", headers=headers)
+        assert resp.status_code == 200
+        assert resp.headers.get("access-control-allow-origin") == "https://on-ground-ai.vercel.app"
+        assert "POST" in resp.headers.get("access-control-allow-methods", "")
+        assert "content-type" in resp.headers.get("access-control-allow-headers", "").lower()
+        assert resp.headers.get("access-control-allow-credentials") == "true"
+
+@pytest.mark.asyncio
+async def test_cors_preflight_telephony_status():
+    transport = ASGITransport(app=app)
+    headers = {
+        "Origin": "https://on-ground-ai.vercel.app",
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "content-type,authorization"
+    }
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.options("/api/telephony/status", headers=headers)
+        assert resp.status_code == 200
+        assert resp.headers.get("access-control-allow-origin") == "https://on-ground-ai.vercel.app"
+        assert "GET" in resp.headers.get("access-control-allow-methods", "")
+
+@pytest.mark.asyncio
+async def test_cors_actual_login_includes_allow_origin():
+    transport = ASGITransport(app=app)
+    headers = {
+        "Origin": "https://on-ground-ai.vercel.app",
+        "Content-Type": "application/json"
+    }
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/auth/login", json={
+            "email": "alice@onground.ai",
+            "password": "Password123!"
+        }, headers=headers)
+        assert resp.status_code == 200
+        assert resp.headers.get("access-control-allow-origin") == "https://on-ground-ai.vercel.app"
+        assert resp.headers.get("access-control-allow-credentials") == "true"
+        data = resp.json()
+        assert "access_token" in data
+
+@pytest.mark.asyncio
+async def test_cors_actual_telephony_status_includes_allow_origin():
+    transport = ASGITransport(app=app)
+    headers = {
+        "Origin": "https://on-ground-ai.vercel.app"
+    }
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/telephony/status", headers=headers)
+        assert resp.status_code == 200
+        assert resp.headers.get("access-control-allow-origin") == "https://on-ground-ai.vercel.app"
+        assert resp.headers.get("access-control-allow-credentials") == "true"
+
