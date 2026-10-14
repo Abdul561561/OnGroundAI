@@ -284,17 +284,22 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!isMounted) return;
       setSignalingStatus('connecting');
       let wsUrl: string;
-      const customWs = (import.meta.env.VITE_WS_URL || '').trim();
       const customApi = (import.meta.env.VITE_API_URL || '').trim();
 
-      if (customWs) {
-        const base = customWs.endsWith('/ws/signaling') ? customWs : `${customWs.replace(/\/+$/, '')}/ws/signaling`;
-        const sep = base.includes('?') ? '&' : '?';
-        wsUrl = `${base}${sep}token=${encodeURIComponent(token)}`;
-      } else if (customApi) {
-        const cleanApi = customApi.replace(/\/api\/?$/, '').replace(/\/+$/, '');
-        const wsScheme = cleanApi.startsWith('https://') ? 'wss://' : 'ws://';
-        const hostPath = cleanApi.replace(/^https?:\/\//, '');
+      if (customApi) {
+        // Derive WebSocket URL directly from VITE_API_URL to eliminate separate stale WS URLs
+        const cleanApi = customApi.split('?')[0].split('#')[0].replace(/\/api\/?$/, '').replace(/\/+$/, '');
+        let wsScheme = 'wss://';
+        if (cleanApi.startsWith('http://')) {
+          wsScheme = 'ws://';
+        } else if (cleanApi.startsWith('https://')) {
+          wsScheme = 'wss://';
+        } else if (cleanApi.startsWith('ws://')) {
+          wsScheme = 'ws://';
+        } else if (cleanApi.startsWith('wss://')) {
+          wsScheme = 'wss://';
+        }
+        const hostPath = cleanApi.replace(/^(?:https?|wss?):\/\//, '');
         wsUrl = `${wsScheme}${hostPath}/ws/signaling?token=${encodeURIComponent(token)}`;
       } else {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
