@@ -14,7 +14,7 @@ services:
       - key: MONGODB_DATABASE
         value: onground_ai
       - key: TELEPHONY_PROVIDER
-        value: unconfigured
+        value: auto
       - key: ALLOW_DEMO_SEED
         value: "true"
       - key: MONGODB_URI
@@ -24,4 +24,18 @@ services:
       - key: JWT_SECRET
         generateValue: true
       - key: FRONTEND_ORIGIN
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_PHONE_NUMBER
+        sync: false
+      - key: TWILIO_API_KEY_SID
+        sync: false
+      - key: TWILIO_API_KEY_SECRET
+        sync: false
+      - key: TWILIO_TWIML_APP_SID
         sync: false

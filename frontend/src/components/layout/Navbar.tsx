@@ -62,24 +62,38 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenAuth, onOpenCarrierModal }
 
       <div className="flex items-center gap-3 sm:gap-4">
         {/* Carrier Status Pill */}
-        <button
-          onClick={onOpenCarrierModal}
-          className={`hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs transition-colors ${
-            carrierStatus?.is_configured
-              ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-300 hover:bg-emerald-900/40'
-              : 'bg-amber-950/40 border-amber-800/60 text-amber-300 hover:bg-amber-900/40'
-          }`}
-          title="Click to view carrier diagnostic specifications"
-        >
-          {carrierStatus?.is_configured ? (
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-          ) : (
-            <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
-          )}
-          <span className="font-medium">
-            {carrierStatus?.is_configured ? 'PSTN Carrier: Active' : 'Zero-Payment Mode'}
-          </span>
-        </button>
+        {(() => {
+          const isOperational = Boolean(
+            carrierStatus?.is_configured &&
+              (carrierStatus?.is_operational ??
+                (carrierStatus?.account_verified !== false && carrierStatus?.public_webhook_ready))
+          );
+          const pillLabel = isOperational
+            ? 'PSTN Carrier: Active'
+            : carrierStatus?.is_configured && !carrierStatus?.public_webhook_ready
+            ? 'PSTN: Webhook Setup Needed'
+            : carrierStatus?.is_configured
+            ? 'PSTN: Verification Needed'
+            : 'Zero-Payment Mode';
+          return (
+            <button
+              onClick={onOpenCarrierModal}
+              className={`hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs transition-colors ${
+                isOperational
+                  ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-300 hover:bg-emerald-900/40'
+                  : 'bg-amber-950/40 border-amber-800/60 text-amber-300 hover:bg-amber-900/40'
+              }`}
+              title="Click to view carrier diagnostic specifications"
+            >
+              {isOperational ? (
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+              ) : (
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+              )}
+              <span className="font-medium">{pillLabel}</span>
+            </button>
+          );
+        })()}
 
         {/* Signaling Status Indicator */}
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700/60 text-xs text-slate-300">

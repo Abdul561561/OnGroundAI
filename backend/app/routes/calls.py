@@ -182,7 +182,7 @@ async def update_call_record(
         updates["status"] = req.status
     if req.ended_at:
         updates["ended_at"] = req.ended_at
-    elif req.status in ["ended", "completed", "rejected", "failed", "missed"] and not call.get("ended_at"):
+    elif req.status in ["ended", "completed", "rejected", "failed", "missed", "busy", "no_answer", "canceled"] and not call.get("ended_at"):
         updates["ended_at"] = datetime.now(timezone.utc).isoformat()
 
     if req.duration_seconds is not None:

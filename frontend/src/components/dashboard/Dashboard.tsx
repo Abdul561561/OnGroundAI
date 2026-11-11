@@ -157,14 +157,29 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, onSelectContac
         >
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-medium text-slate-400">PSTN Carrier</span>
-            <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-              carrierStatus?.is_configured ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'
-            }`}>
-              {carrierStatus?.is_configured ? <ShieldCheck className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
-            </div>
+            {(() => {
+              const isOperational = Boolean(
+                carrierStatus?.is_configured &&
+                  (carrierStatus?.is_operational ??
+                    (carrierStatus?.account_verified !== false && carrierStatus?.public_webhook_ready))
+              );
+              return (
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+                  isOperational ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'
+                }`}>
+                  {isOperational ? <ShieldCheck className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
+                </div>
+              );
+            })()}
           </div>
           <div className="text-sm font-bold text-white truncate">
-            {carrierStatus?.is_configured ? 'Connected' : 'Zero-Payment Mode'}
+            {carrierStatus?.is_configured &&
+            (carrierStatus?.is_operational ??
+              (carrierStatus?.account_verified !== false && carrierStatus?.public_webhook_ready))
+              ? 'Connected'
+              : carrierStatus?.is_configured && !carrierStatus?.public_webhook_ready
+              ? 'Webhook Setup Needed'
+              : 'Zero-Payment Mode'}
           </div>
           <p className="text-[11px] text-slate-500 mt-1">
             {carrierStatus?.provider === 'twilio' ? 'Twilio Telecom' : 'Simulated dialing disabled'}
@@ -220,7 +235,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, onSelectContac
             </p>
           </div>
           <div className="mt-3 pt-2 border-t border-slate-800/80 text-[10px] text-slate-500">
-            PSTN Carrier: {carrierStatus?.is_configured ? 'Configured' : 'Unconfigured'}
+            PSTN Carrier:{' '}
+            {carrierStatus?.is_configured &&
+            (carrierStatus?.is_operational ??
+              (carrierStatus?.account_verified !== false && carrierStatus?.public_webhook_ready))
+              ? 'Active'
+              : carrierStatus?.is_configured && !carrierStatus?.public_webhook_ready
+              ? 'Needs Public HTTPS URL'
+              : 'Unconfigured'}
           </div>
         </div>
 

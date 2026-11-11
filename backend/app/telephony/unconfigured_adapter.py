@@ -47,7 +47,8 @@ class UnconfiguredAdapter(TelephonyProvider):
         agent_id: str,
         agent_name: str,
         contact_id: Optional[str] = None,
-        notes: Optional[str] = None
+        notes: Optional[str] = None,
+        call_record_id: Optional[str] = None
     ) -> Dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

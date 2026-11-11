@@ -43,6 +43,8 @@ export const SoftphoneDialer: React.FC<SoftphoneDialerProps> = ({
   const [sdkStatus, setSdkStatus] = useState<'uninitialized' | 'registering' | 'ready' | 'error'>('uninitialized');
   const [sdkStatusMsg, setSdkStatusMsg] = useState<string>('');
   const [callState, setCallState] = useState<'idle' | 'incoming' | 'calling' | 'connected' | 'ended'>('idle');
+  const [liveCallStatus, setLiveCallStatus] = useState<string>('idle');
+  const [callMode, setCallMode] = useState<'rest' | 'browser_sdk'>('rest');
   const [callDuration, setCallDuration] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
   const [isOnHold, setIsOnHold] = useState(false);
@@ -65,10 +67,15 @@ export const SoftphoneDialer: React.FC<SoftphoneDialerProps> = ({
   const deviceRef = useRef<Device | null>(null);
   const activeSdkCallRef = useRef<Call | null>(null);
   const activeCallRecordRef = useRef<CallRecord | null>(null);
+  const callStateRef = useRef(callState);
 
   useEffect(() => {
     activeCallRecordRef.current = activeCallRecord;
   }, [activeCallRecord]);
+
+  useEffect(() => {
+    callStateRef.current = callState;
+  }, [callState]);
 
   useEffect(() => {
     if (initialPhoneNumber) {
@@ -113,6 +120,48 @@ export const SoftphoneDialer: React.FC<SoftphoneDialerProps> = ({
     }
   }, [phoneNumber, contactsList]);
 
+  const applyCarrierStatusUpdate = (
+    statusVal: string,
+    opts?: {
+      callSid?: string | null;
+      durationSeconds?: number | null;
+      errorCode?: string | null;
+      rawStatus?: string | null;
+    }
+  ) => {
+    const normalized = (statusVal || '').toLowerCase();
+    if (!normalized) return;
+
+    setLiveCallStatus(normalized);
+    setActiveCallRecord((prev) => {
+      if (!prev) return prev;
+      const shouldReplaceSid =
+        Boolean(opts?.callSid) &&
+        (!prev.provider_call_id || prev.provider_call_id.startsWith('sdk-pending-'));
+      return {
+        ...prev,
+        provider_call_id: shouldReplaceSid ? (opts?.callSid || prev.provider_call_id) : prev.provider_call_id,
+        status: normalized,
+      };
+    });
+
+    if (normalized === 'connected' || normalized === 'in_progress' || normalized === 'in-progress') {
+      setCallState('connected');
+    } else if (normalized === 'queued' || normalized === 'initiated' || normalized === 'ringing') {
+      setCallState((prev) => (prev === 'connected' ? 'connected' : 'calling'));
+    } else if (['completed', 'busy', 'no_answer', 'no-answer', 'failed', 'canceled', 'missed'].includes(normalized)) {
+      if (opts?.durationSeconds) {
+        setCallDuration(opts.durationSeconds);
+      }
+      if (['busy', 'no_answer', 'no-answer', 'failed', 'canceled', 'missed'].includes(normalized)) {
+        setCallOutcome(normalized === 'busy' ? 'busy' : 'no_answer');
+        const codeText = opts?.errorCode ? ` (Twilio Error ${opts.errorCode})` : '';
+        setErrorMsg(`Carrier reported call status: ${opts?.rawStatus || normalized}${codeText}`);
+      }
+      setCallState('ended');
+    }
+  };
+
   // Listen for real-time PSTN status webhooks forwarded from CallContext WebSocket
   useEffect(() => {
     const handlePstnEvent = (e: Event) => {
@@ -125,40 +174,54 @@ export const SoftphoneDialer: React.FC<SoftphoneDialerProps> = ({
           currentRec &&
           (detail.call_id === currentRec._id || detail.call_sid === currentRec.provider_call_id)
         ) {
-          if (detail.status === 'connected') {
-            setCallState('connected');
-          } else if (detail.status === 'ringing' || detail.status === 'calling') {
-            setCallState((prev) => (prev === 'connected' ? 'connected' : 'calling'));
-          } else if (
-            ['completed', 'busy', 'no_answer', 'failed', 'canceled'].includes(detail.status)
-          ) {
-            if (detail.duration_seconds) {
-              setCallDuration(detail.duration_seconds);
-            }
-            if (['busy', 'no_answer', 'failed', 'canceled'].includes(detail.status)) {
-              setCallOutcome(detail.status === 'busy' ? 'busy' : 'no_answer');
-              setErrorMsg(`Carrier reported call status: ${detail.raw_status || detail.status}`);
-            }
-            setCallState('ended');
-          }
+          applyCarrierStatusUpdate(detail.status || detail.raw_status, {
+            callSid: detail.call_sid,
+            durationSeconds: detail.duration_seconds,
+            errorCode: detail.error_code,
+            rawStatus: detail.raw_status,
+          });
         }
       } else if (detail.type === 'incoming_pstn_call') {
-        if (callState === 'idle') {
-          setIncomingCallerNumber(detail.caller_number || 'Unknown Caller');
-          setPhoneNumber(detail.caller_number || '');
+        if (callStateRef.current === 'idle') {
+          setIncomingCallerNumber(detail.caller_number || detail.caller_phone || 'Unknown Caller');
+          setPhoneNumber(detail.caller_number || detail.caller_phone || '');
         }
       }
     };
 
     window.addEventListener('onground_pstn_event', handlePstnEvent);
     return () => window.removeEventListener('onground_pstn_event', handlePstnEvent);
-  }, [callState]);
+  }, []);
+
+  // Poll live call status from FastAPI/Twilio as a resilient fallback while call is active
+  useEffect(() => {
+    if ((callState !== 'calling' && callState !== 'connected') || !activeCallRecord?._id) {
+      return;
+    }
+    const callId = activeCallRecord._id;
+    const interval = setInterval(async () => {
+      try {
+        const latest = await api.getTelephonyCallStatus(callId, true);
+        if (latest) {
+          setActiveCallRecord(latest);
+          applyCarrierStatusUpdate(latest.status, {
+            callSid: latest.provider_call_id,
+            durationSeconds: latest.duration_seconds,
+          });
+        }
+      } catch {
+        // Non-fatal fallback polling error
+      }
+    }, 2500);
+
+    return () => clearInterval(interval);
+  }, [callState, activeCallRecord?._id]);
 
   const loadCarrierStatus = async () => {
     try {
       const status = await api.getTelephonyStatus();
       setCarrierStatus(status);
-      if (status.is_configured && status.browser_audio_ready) {
+      if (status.is_configured && (status.browser_audio_ready || status.incoming_bridge_ready || status.has_api_key)) {
         await initTwilioVoiceDevice();
       }
     } catch (e: any) {
@@ -172,7 +235,7 @@ export const SoftphoneDialer: React.FC<SoftphoneDialerProps> = ({
       const tokenData = await api.getSoftphoneToken();
       if (!tokenData.token) {
         setSdkStatus('uninitialized');
-        setSdkStatusMsg(tokenData.message || 'Browser Voice SDK token unavailable.');
+        setSdkStatusMsg(tokenData.message || tokenData.error || 'Browser Voice SDK token unavailable.');
         return;
       }
 
@@ -186,7 +249,11 @@ export const SoftphoneDialer: React.FC<SoftphoneDialerProps> = ({
 
       device.on('registered', () => {
         setSdkStatus('ready');
-        setSdkStatusMsg('Twilio Browser Voice SDK registered (Mic/Speaker ready)');
+        setSdkStatusMsg(
+          tokenData.has_twiml_app
+            ? 'Twilio Browser Voice SDK registered (Mic/Speaker ready)'
+            : 'Twilio Browser Audio Bridge registered (ready for REST call audio)'
+        );
       });
 
       device.on('error', (twilioError: any) => {
@@ -197,27 +264,48 @@ export const SoftphoneDialer: React.FC<SoftphoneDialerProps> = ({
 
       device.on('incoming', (call: Call) => {
         activeSdkCallRef.current = call;
+
+        const attachSdkCallListeners = (sdkCall: Call) => {
+          sdkCall.on('accept', () => {
+            setCallState('connected');
+            setLiveCallStatus('connected');
+            setCallDuration(0);
+          });
+          sdkCall.on('disconnect', () => {
+            activeSdkCallRef.current = null;
+            setCallState('ended');
+            setLiveCallStatus('completed');
+          });
+          sdkCall.on('cancel', () => {
+            activeSdkCallRef.current = null;
+            if (callStateRef.current === 'incoming') {
+              setCallState('idle');
+            }
+          });
+          sdkCall.on('reject', () => {
+            activeSdkCallRef.current = null;
+            if (callStateRef.current === 'incoming') {
+              setCallState('idle');
+            }
+          });
+        };
+
+        attachSdkCallListeners(call);
+
+        // If this incoming Client leg is bridging a REST outbound call we just initiated, auto-accept browser audio
+        if (callStateRef.current === 'calling' || callStateRef.current === 'connected') {
+          try {
+            call.accept();
+            return;
+          } catch (acceptErr) {
+            console.warn('Auto-accepting REST audio bridge failed, showing manual Answer prompt:', acceptErr);
+          }
+        }
+
         const fromNumber = call.parameters?.From || 'Incoming Caller';
         setIncomingCallerNumber(fromNumber);
         setPhoneNumber(fromNumber);
         setCallState('incoming');
-
-        call.on('accept', () => {
-          setCallState('connected');
-          setCallDuration(0);
-        });
-        call.on('disconnect', () => {
-          activeSdkCallRef.current = null;
-          setCallState('ended');
-        });
-        call.on('cancel', () => {
-          activeSdkCallRef.current = null;
-          setCallState('idle');
-        });
-        call.on('reject', () => {
-          activeSdkCallRef.current = null;
-          setCallState('idle');
-        });
       });
 
       await device.register();
@@ -276,8 +364,9 @@ export const SoftphoneDialer: React.FC<SoftphoneDialerProps> = ({
 
   const handleStartCall = async () => {
     setErrorMsg(null);
-    if (!phoneNumber || phoneNumber.trim().length < 5) {
-      setErrorMsg('Please enter a valid E.164 telephone number (e.g. +15551234567).');
+    const cleanPhone = phoneNumber.trim().replace(/[\s\-().]/g, '');
+    if (!/^\+[1-9]\d{6,14}$/.test(cleanPhone)) {
+      setErrorMsg('Please enter a valid E.164 telephone number with country code (e.g. +15551234567 or +919876543210).');
       return;
     }
 
@@ -287,15 +376,21 @@ export const SoftphoneDialer: React.FC<SoftphoneDialerProps> = ({
       return;
     }
 
-    const cleanPhone = phoneNumber.trim();
-    const useBrowserSdk = Boolean(deviceRef.current && sdkStatus === 'ready');
+    setPhoneNumber(cleanPhone);
+    const useBrowserSdk = Boolean(
+      callMode === 'browser_sdk'
+      && carrierStatus?.browser_audio_ready
+      && deviceRef.current
+      && sdkStatus === 'ready'
+    );
 
     try {
       setCallState('calling');
+      setLiveCallStatus('initiating');
       setCallDuration(0);
       setIsMuted(false);
 
-      // 1. Log outbound call in backend (and trigger REST call if Browser SDK is not used)
+      // 1. Send call request to FastAPI (validates E.164 & calls Twilio REST API in REST mode)
       const callRecord = await api.initiateOutboundPhoneCall(
         cleanPhone,
         activeContact?._id,
@@ -303,8 +398,13 @@ export const SoftphoneDialer: React.FC<SoftphoneDialerProps> = ({
         useBrowserSdk
       );
       setActiveCallRecord(callRecord);
+      setLiveCallStatus(callRecord.status || 'queued');
 
-      // 2. If Browser Voice SDK is ready, connect browser microphone & speaker to Twilio TwiML App
+      if (callRecord.status === 'connected' || callRecord.status === 'in_progress') {
+        setCallState('connected');
+      }
+
+      // 2. If user explicitly selected Browser SDK mode (with TwiML App), connect browser mic to TwiML App
       if (useBrowserSdk && deviceRef.current) {
         const sdkCall = await deviceRef.current.connect({
           params: {
@@ -318,38 +418,45 @@ export const SoftphoneDialer: React.FC<SoftphoneDialerProps> = ({
 
         sdkCall.on('ringing', () => {
           setCallState('calling');
+          setLiveCallStatus('ringing');
         });
 
         sdkCall.on('accept', () => {
           setCallState('connected');
+          setLiveCallStatus('connected');
           setCallDuration(0);
         });
 
         sdkCall.on('disconnect', () => {
           activeSdkCallRef.current = null;
           setCallState('ended');
+          setLiveCallStatus('completed');
         });
 
         sdkCall.on('cancel', () => {
           activeSdkCallRef.current = null;
           setCallState('ended');
+          setLiveCallStatus('canceled');
         });
 
         sdkCall.on('reject', () => {
           activeSdkCallRef.current = null;
           setCallOutcome('no_answer');
           setCallState('ended');
+          setLiveCallStatus('no_answer');
         });
 
         sdkCall.on('error', (err: any) => {
           setErrorMsg(err?.message || 'Twilio Voice SDK call error.');
           activeSdkCallRef.current = null;
           setCallState('ended');
+          setLiveCallStatus('failed');
         });
       }
-      // Note: In REST-only mode, callState remains 'calling' until Twilio status webhook reports 'in-progress' -> 'connected'
+      // Note: In REST mode, callState reflects Twilio's real status ('queued' -> 'ringing' -> 'connected') via callbacks/polling
     } catch (err: any) {
       setCallState('idle');
+      setLiveCallStatus('idle');
       setErrorMsg(err.message || 'Failed to initiate outbound carrier call.');
     }
   };
@@ -388,13 +495,19 @@ export const SoftphoneDialer: React.FC<SoftphoneDialerProps> = ({
 
     if (activeCallRecord) {
       try {
-        await api.hangupPhoneCall(
+        const hangupRes = await api.hangupPhoneCall(
           activeCallRecord.provider_call_id,
           activeCallRecord._id,
           callDuration
         );
-      } catch (e) {
+        if (hangupRes?.status && hangupRes.status !== 'error') {
+          setLiveCallStatus(hangupRes.status);
+        } else {
+          setLiveCallStatus(callState === 'connected' ? 'completed' : 'canceled');
+        }
+      } catch (e: any) {
         console.error('Hangup error:', e);
+        setErrorMsg(e?.message || 'Error terminating call with carrier');
       }
     }
     setCallState('ended');
@@ -455,6 +568,8 @@ export const SoftphoneDialer: React.FC<SoftphoneDialerProps> = ({
       setOutcomeSaved(true);
       setTimeout(() => {
         setCallState('idle');
+        setLiveCallStatus('idle');
+        setActiveCallRecord(null);
         setCallDuration(0);
         setOutcomeSaved(false);
         setCallNotes('');
@@ -469,52 +584,91 @@ export const SoftphoneDialer: React.FC<SoftphoneDialerProps> = ({
     }
   };
 
+  const isCarrierOperational = Boolean(
+    carrierStatus?.is_configured &&
+      (carrierStatus?.is_operational ??
+        (carrierStatus?.account_verified !== false && carrierStatus?.public_webhook_ready))
+  );
+
+  const needsPublicWebhook = Boolean(carrierStatus?.is_configured && !carrierStatus?.public_webhook_ready);
+
   return (
     <div className="max-w-4xl mx-auto p-4 md:p-6 space-y-6">
       {/* Carrier Status Banner */}
       <div className={`p-4 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 ${
-        carrierStatus?.is_configured
+        isCarrierOperational
           ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-200'
           : 'bg-amber-950/25 border-amber-800/50 text-amber-200'
       }`}>
         <div className="flex items-center gap-3">
-          <div className={`p-2 rounded-lg ${carrierStatus?.is_configured ? 'bg-emerald-900/60' : 'bg-amber-900/60'}`}>
-            {carrierStatus?.is_configured ? <ShieldCheck className="w-5 h-5 text-emerald-400" /> : <AlertTriangle className="w-5 h-5 text-amber-400" />}
+          <div className={`p-2 rounded-lg ${isCarrierOperational ? 'bg-emerald-900/60' : 'bg-amber-900/60'}`}>
+            {isCarrierOperational ? <ShieldCheck className="w-5 h-5 text-emerald-400" /> : <AlertTriangle className="w-5 h-5 text-amber-400" />}
           </div>
           <div>
             <div className="font-semibold text-sm flex items-center gap-2 flex-wrap">
-              <span>Carrier Status: {carrierStatus?.is_configured ? 'PSTN Carrier Connected' : 'PSTN Carrier Unconfigured'}</span>
+              <span>
+                Carrier Status:{' '}
+                {isCarrierOperational
+                  ? 'PSTN Carrier Active'
+                  : needsPublicWebhook
+                  ? 'PSTN Webhook Setup Needed'
+                  : carrierStatus?.is_configured
+                  ? 'PSTN Carrier Needs Verification'
+                  : 'PSTN Carrier Unconfigured'}
+              </span>
               <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${
-                carrierStatus?.is_configured ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'
+                isCarrierOperational ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'
               }`}>
                 {carrierStatus?.provider || 'UNCONFIGURED'}
               </span>
-              {carrierStatus?.is_configured && (
+              {carrierStatus?.is_trial && (
+                <span className="text-[11px] px-2 py-0.5 rounded-full font-medium bg-amber-500/20 text-amber-300">
+                  Trial Account (Verified Numbers Only)
+                </span>
+              )}
+              {needsPublicWebhook && (
+                <span className="text-[11px] px-2 py-0.5 rounded-full font-medium bg-rose-500/20 text-rose-300">
+                  Public HTTPS Webhook Needed (ngrok)
+                </span>
+              )}
+              {isCarrierOperational && (
                 <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium flex items-center gap-1 ${
                   sdkStatus === 'ready'
                     ? 'bg-indigo-500/20 text-indigo-300'
                     : 'bg-amber-500/20 text-amber-300'
                 }`}>
                   <Volume2 className="w-3 h-3" />
-                  {sdkStatus === 'ready' ? 'Browser Audio SDK Ready' : 'REST Dialer Mode'}
+                  {sdkStatus === 'ready' ? 'Browser Audio Bridge Ready' : 'REST Dialer Mode'}
                 </span>
               )}
             </div>
-            <p className="text-xs opacity-80 mt-0.5">
-              {carrierStatus?.is_configured
+            <p className="text-xs opacity-85 mt-0.5">
+              {needsPublicWebhook
+                ? `PUBLIC_BASE_URL ('${carrierStatus?.public_webhook_url || 'http://localhost:8000'}') must be a publicly accessible HTTPS URL (such as an ngrok URL) so Twilio can reach voice and status webhooks.`
+                : carrierStatus?.is_configured
                 ? `${carrierStatus.message || `Ready via ${carrierStatus.active_carrier}`} ${sdkStatusMsg ? `• ${sdkStatusMsg}` : ''}`
                 : 'Twilio PSTN credentials are not configured in backend/.env. Simulated phone calls are strictly disabled.'}
             </p>
           </div>
         </div>
 
-        <button
-          onClick={() => setShowCarrierModal(true)}
-          className="text-xs px-3 py-1.5 rounded-lg border border-current hover:bg-white/10 transition-colors flex items-center gap-1.5 font-medium shrink-0"
-        >
-          <Info className="w-3.5 h-3.5" />
-          <span>Carrier Setup & Diagnostics</span>
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={loadCarrierStatus}
+            className="text-xs px-2.5 py-1.5 rounded-lg border border-current/60 hover:bg-white/10 transition-colors flex items-center gap-1.5 font-medium"
+            title="Re-check backend carrier and PUBLIC_BASE_URL status"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Refresh</span>
+          </button>
+          <button
+            onClick={() => setShowCarrierModal(true)}
+            className="text-xs px-3 py-1.5 rounded-lg border border-current hover:bg-white/10 transition-colors flex items-center gap-1.5 font-medium"
+          >
+            <Info className="w-3.5 h-3.5" />
+            <span>Carrier Setup & Diagnostics</span>
+          </button>
+        </div>
       </div>
 
       {errorMsg && (
@@ -549,6 +703,28 @@ export const SoftphoneDialer: React.FC<SoftphoneDialerProps> = ({
                 </div>
               )}
             </div>
+
+            {carrierStatus?.browser_audio_ready && callState === 'idle' && (
+              <div className="mb-4 flex items-center justify-between text-[11px] bg-slate-950/70 border border-slate-800 rounded-lg p-2">
+                <span className="text-slate-400">Outbound Calling Mode:</span>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setCallMode('rest')}
+                    className={`px-2 py-1 rounded ${callMode === 'rest' ? 'bg-indigo-600 text-white font-semibold' : 'text-slate-400 hover:text-white'}`}
+                  >
+                    Twilio REST API
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCallMode('browser_sdk')}
+                    className={`px-2 py-1 rounded ${callMode === 'browser_sdk' ? 'bg-indigo-600 text-white font-semibold' : 'text-slate-400 hover:text-white'}`}
+                  >
+                    Direct Browser SDK
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Display Screen */}
             <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 mb-6 text-center">
@@ -586,13 +762,18 @@ export const SoftphoneDialer: React.FC<SoftphoneDialerProps> = ({
               )}
 
               {callState === 'calling' && (
-                <div className="py-3 space-y-1">
-                  <div className="text-indigo-400 text-sm font-medium animate-pulse">
-                    Ringing Destination Handset via Carrier...
+                <div className="py-3 space-y-1.5">
+                  <div className="text-indigo-400 text-sm font-medium animate-pulse uppercase tracking-wider">
+                    Twilio Status: {liveCallStatus.replace('_', ' ')}
                   </div>
                   <div className="text-xl font-mono text-white">{phoneNumber}</div>
+                  {activeCallRecord?.provider_call_id && (
+                    <div className="text-[11px] font-mono text-slate-400">
+                      Call SID: {activeCallRecord.provider_call_id}
+                    </div>
+                  )}
                   <div className="text-[11px] text-slate-400">
-                    Waiting for recipient to answer before starting call timer
+                    Waiting for recipient phone to answer (call is not answered yet)
                   </div>
                 </div>
               )}
@@ -601,16 +782,28 @@ export const SoftphoneDialer: React.FC<SoftphoneDialerProps> = ({
                 <div className="py-2 space-y-1">
                   <div className="flex items-center justify-center gap-2 text-emerald-400 text-xs font-semibold uppercase tracking-wider">
                     <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-                    Live PSTN Audio Connected
+                    Twilio Status: {liveCallStatus.replace('_', ' ')} — Live PSTN Audio
                   </div>
                   <div className="text-xl font-mono text-white">{phoneNumber}</div>
+                  {activeCallRecord?.provider_call_id && (
+                    <div className="text-[11px] font-mono text-slate-400">
+                      Call SID: {activeCallRecord.provider_call_id}
+                    </div>
+                  )}
                   <div className="text-2xl font-mono font-bold text-emerald-300">{formatDuration(callDuration)}</div>
                 </div>
               )}
 
               {callState === 'ended' && (
                 <div className="py-2 space-y-1">
-                  <div className="text-slate-400 text-xs font-medium uppercase tracking-wider">Call Concluded — Complete Wrap-Up</div>
+                  <div className="text-slate-300 text-xs font-medium uppercase tracking-wider">
+                    Call Concluded ({liveCallStatus.replace('_', ' ')}) — Complete Wrap-Up
+                  </div>
+                  {activeCallRecord?.provider_call_id && (
+                    <div className="text-[11px] font-mono text-slate-500">
+                      Call SID: {activeCallRecord.provider_call_id}
+                    </div>
+                  )}
                   <div className="text-lg font-mono text-white">{formatDuration(callDuration)}</div>
                 </div>
               )}
@@ -960,21 +1153,42 @@ export const SoftphoneDialer: React.FC<SoftphoneDialerProps> = ({
               <div className="flex items-center justify-between">
                 <span className="text-slate-400">PSTN Credentials Validated:</span>
                 <span className={carrierStatus?.credentials_valid ? 'text-emerald-400 font-semibold' : 'text-red-400 font-semibold'}>
-                  {carrierStatus?.credentials_valid ? `Yes (${carrierStatus.account_name || 'Verified'})` : 'No — Missing in backend/.env'}
+                  {carrierStatus?.credentials_valid
+                    ? `Yes (${carrierStatus.account_name || 'Verified'}${carrierStatus.account_type ? ` • ${carrierStatus.account_type}` : ''})`
+                    : (carrierStatus?.verification_error ? `Failed: ${carrierStatus.verification_error}` : 'No — Missing in backend/.env')}
                 </span>
               </div>
+              {carrierStatus?.balance && (
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">Account Balance:</span>
+                  <span className="text-slate-200 font-mono font-semibold">
+                    {carrierStatus.balance} {carrierStatus.currency || 'USD'}
+                  </span>
+                </div>
+              )}
               <div className="flex items-center justify-between">
-                <span className="text-slate-400">Browser Audio SDK Ready:</span>
-                <span className={carrierStatus?.browser_audio_ready ? 'text-emerald-400 font-semibold' : 'text-amber-400 font-semibold'}>
-                  {carrierStatus?.browser_audio_ready ? 'Yes (TwiML App + API Keys set)' : 'Requires TWILIO_TWIML_APP_SID & API Keys'}
+                <span className="text-slate-400">Browser Audio Bridge:</span>
+                <span className={(carrierStatus?.browser_audio_ready || carrierStatus?.incoming_bridge_ready) ? 'text-emerald-400 font-semibold' : 'text-amber-400 font-semibold'}>
+                  {carrierStatus?.browser_audio_ready
+                    ? 'Full Voice SDK Ready (TwiML App + API Keys)'
+                    : carrierStatus?.incoming_bridge_ready
+                    ? 'REST Bridge Ready (API Keys set; TwiML App optional)'
+                    : 'Requires TWILIO_API_KEY_SID & TWILIO_API_KEY_SECRET'}
                 </span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-400">Public Webhook Tunnel:</span>
                 <span className={carrierStatus?.public_webhook_ready ? 'text-emerald-400 font-semibold' : 'text-amber-400 font-semibold'}>
-                  {carrierStatus?.public_webhook_ready ? 'Configured' : 'Localhost (Requires ngrok / public HTTPS URL)'}
+                  {carrierStatus?.public_webhook_ready ? (carrierStatus.public_webhook_url || 'Configured') : 'Localhost (Requires ngrok / public HTTPS URL)'}
                 </span>
               </div>
+              {carrierStatus?.webhook_urls?.voice && (
+                <div className="flex flex-col gap-1 pt-1 border-t border-slate-800/60">
+                  <span className="text-slate-400">Active Webhook Endpoints:</span>
+                  <code className="text-[10px] text-indigo-300 break-all">Voice: {carrierStatus.webhook_urls.voice}</code>
+                  <code className="text-[10px] text-indigo-300 break-all">Status: {carrierStatus.webhook_urls.status}</code>
+                </div>
+              )}
               <div className="flex items-center justify-between">
                 <span className="text-slate-400">Internal Staff WebRTC Intercom:</span>
                 <span className="text-indigo-400 font-semibold">Online & Ready (Zero External Cost)</span>
@@ -995,12 +1209,13 @@ export const SoftphoneDialer: React.FC<SoftphoneDialerProps> = ({
             <div className="space-y-2 text-xs text-slate-300 leading-relaxed">
               <p className="font-semibold text-slate-200">Required Environment Variables in <code className="text-indigo-300">backend/.env</code> for Live PSTN Audio:</p>
               <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 font-mono text-[11px] text-slate-300 space-y-1 overflow-x-auto">
+                <div>TELEPHONY_PROVIDER=twilio</div>
                 <div>TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</div>
                 <div>TWILIO_AUTH_TOKEN=your_auth_token</div>
                 <div>TWILIO_PHONE_NUMBER=+1234567890</div>
-                <div>TWILIO_TWIML_APP_SID=APxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</div>
                 <div>TWILIO_API_KEY_SID=SKxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</div>
                 <div>TWILIO_API_KEY_SECRET=your_api_key_secret</div>
+                <div>TWILIO_TWIML_APP_SID=APxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</div>
                 <div>PUBLIC_BASE_URL=https://your-tunnel.ngrok-free.app</div>
               </div>
             </div>

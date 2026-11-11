@@ -31,7 +31,8 @@ class TelephonyProvider(ABC):
         agent_id: str,
         agent_name: str,
         contact_id: Optional[str] = None,
-        notes: Optional[str] = None
+        notes: Optional[str] = None,
+        call_record_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Place a genuine outbound telephone call to an ordinary phone number.
@@ -43,6 +44,10 @@ class TelephonyProvider(ABC):
     async def terminate_call(self, call_id: str) -> Dict[str, Any]:
         """Hang up an active telephone call."""
         pass
+
+    async def fetch_call_status(self, call_id: str) -> Dict[str, Any]:
+        """Fetch live status for an active or recent call from the carrier."""
+        return {"call_sid": call_id, "status": "unknown"}
 
     @abstractmethod
     async def generate_client_token(self, identity: str) -> Dict[str, Any]:
@@ -57,6 +62,12 @@ class TelephonyProvider(ABC):
         Return instructions (TwiML / XML) when an inbound or outbound call connects.
         """
         pass
+
+    async def handle_dial_action(self, form_data: Dict[str, Any]) -> str:
+        """
+        Return TwiML instructions after a <Dial> verb finishes.
+        """
+        return "<Response><Hangup/></Response>"
 
     @abstractmethod
     async def handle_status_callback(self, form_data: Dict[str, Any]) -> Dict[str, Any]:

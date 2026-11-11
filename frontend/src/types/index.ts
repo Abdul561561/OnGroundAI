@@ -128,15 +128,34 @@ export interface ActiveCallSession {
 
 export interface TelephonyStatus {
   is_configured: boolean;
+  is_operational?: boolean;
   provider: string;
   active_carrier: string;
   phone_number?: string;
   message?: string;
   simulated_calling_disabled: boolean;
   browser_audio_ready?: boolean;
+  incoming_bridge_ready?: boolean;
   public_webhook_ready?: boolean;
+  public_webhook_url?: string;
+  webhook_signature_ready?: boolean;
+  webhook_urls?: {
+    voice?: string;
+    dial_action?: string;
+    status?: string;
+  };
   credentials_valid?: boolean;
+  account_verified?: boolean;
   account_name?: string;
+  account_status?: string;
+  account_type?: string;
+  is_trial?: boolean;
+  balance?: string;
+  currency?: string;
+  verified_caller_ids_count?: number;
+  verification_error?: string;
+  has_api_key?: boolean;
+  has_twiml_app?: boolean;
   warnings?: string[];
   configuration_guide?: Record<string, string>;
   internal_webrtc_available?: boolean;

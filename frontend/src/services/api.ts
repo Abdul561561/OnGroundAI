@@ -79,6 +79,8 @@ class ApiClient {
           if (errorData.detail) {
             if (typeof errorData.detail === 'string') {
               errorMessage = errorData.detail;
+            } else if (Array.isArray(errorData.detail) && errorData.detail[0]?.msg) {
+              errorMessage = errorData.detail[0].msg;
             } else if (typeof errorData.detail === 'object' && errorData.detail.message) {
               errorMessage = errorData.detail.message;
             } else {
@@ -205,11 +207,19 @@ class ApiClient {
     token: string | null;
     carrier_configured: boolean;
     browser_audio_ready?: boolean;
+    incoming_bridge_ready?: boolean;
+    has_twiml_app?: boolean;
+    has_api_key?: boolean;
     identity?: string;
     phone_number?: string;
     message?: string;
+    error?: string;
   }> {
     return this.request('/telephony/token');
+  }
+
+  async getTelephonyCallStatus(callId: string, sync: boolean = true): Promise<CallRecord> {
+    return this.request<CallRecord>(`/telephony/calls/${callId}?sync=${sync ? 'true' : 'false'}`);
   }
 
   async initiateOutboundPhoneCall(

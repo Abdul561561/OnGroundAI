@@ -159,7 +159,7 @@ class CallInitiateRequest(BaseModel):
     call_type: CallType = "telephony_pstn"
 
 class TelephonyOutboundRequest(BaseModel):
-    phone_number: str = Field(..., min_length=6, max_length=30)
+    phone_number: str = Field(..., min_length=1, max_length=40)
     contact_id: Optional[str] = None
     notes: Optional[str] = None
     browser_sdk: Optional[bool] = False
